@@ -1,0 +1,14 @@
+/target/
+**/target/
+dist/
+client/dist/
+**/node_modules/
+playwright-report/
+test-results/
+.env
+*.db
+*.db-*
+.DS_Store
+*.tfstate
+*.tfstate.backup
+.playwright-mcp
