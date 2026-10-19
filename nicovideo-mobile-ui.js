@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニコニコ動画 PC版URL スマホUI化
 // @namespace    nicovideo-mobile-ui
-// @version      1.3.1
+// @version      1.3.2
 // @description  PC版URL(www.nicovideo.jp)をスマホで開いたとき、幅約1240px前提のPC版レイアウトをスマホ向けUIに再構成する。
 // @author       opencode
 // @match        https://www.nicovideo.jp/*
@@ -401,8 +401,22 @@
        header[class*='h_webHeader.height']  56px ロゴ/検索/アカウント
      どちらも980px前提の固定幅を持ち、デスクトップサイト補正で
      実効幅360pxになると横にはみ出す。補正時のみ次を行う。
-       - ナビは内容幅を維持したまま横スクロール可能にする
-       - ページヘッダーはロゴを縮小し、検索欄に残り幅を割り当てる */
+       - ナビは非表示にし、ハンバーガーメニューへ集約する
+       - ページヘッダーは48pxへ縮め、検索欄に残り幅を割り当てる */
+  /* 旧ヘッダー(h_webHeader)があるページでは、36px カテゴリナビを
+     隠して1段ヘッダーにする。ホーム/ユーザーページなど旧ヘッダーが
+     無いページは、ナビが唯一のヘッダーなので残す。 */
+  html.nui-desktop-compensated:has(header[class*='h_webHeader.height'])
+    [class*='nico-CommonHeaderRoot'] {
+    display: none !important;
+  }
+  html.nui-desktop-compensated:has(header[class*='h_webHeader.height'])
+    div:has(> [class*='nico-CommonHeaderRoot']) {
+    display: none !important;
+  }
+
+  /* 旧ヘッダーが無いページのナビは、従来どおり横スクロール可能に
+     して 360px 実効幅に収める。 */
   html.nui-desktop-compensated [class*='nico-CommonHeaderRoot'] {
     overflow-x: auto !important;
     overflow-y: hidden !important;
@@ -418,23 +432,33 @@
     [class*='nico-CommonHeaderRoot'] > div > div {
     min-width: 0 !important;
   }
-  /* 36px ナビの行だけ内容幅を維持し、ルート側で横スクロールさせる。
-     子孫の flex まで縮めるとリンク文字が潰れるため、行のみ
-     max-content とする。 */
+  /* ナビの行だけ内容幅を維持し、ルート側で横スクロールさせる。 */
   html.nui-desktop-compensated
     [class*='nico-CommonHeaderRoot']
     [class*='common-header-1ykkee8'] {
     width: max-content !important;
     min-width: 100% !important;
   }
-
-  /* 56px ページヘッダー: ロゴを縮小し、検索欄に残り幅を割り当てる。 */
+  /* ページヘッダー: 56px → 48px。ロゴを縮小し、検索欄に残り幅を
+     割り当てる。ルートの zoom とサイト側 overflow の併用で
+     sticky が効かないため、補正時は fixed で常時表示する。 */
   html.nui-desktop-compensated header[class*='h_webHeader.height'] {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
     width: 100% !important;
     min-width: 0 !important;
+    height: 48px !important;
+    min-height: 48px !important;
     padding-left: 8px !important;
     padding-right: 4px !important;
     gap: 4px !important;
+  }
+  /* fixed ヘッダー分の余白を親へ確保し、本文の先頭を隠さない。 */
+  html.nui-desktop-compensated
+    div:has(> header[class*='h_webHeader.height']) {
+    padding-top: 48px !important;
   }
   html.nui-desktop-compensated header[class*='h_webHeader.height'] > a svg {
     width: 84px !important;
