@@ -616,6 +616,131 @@
   }
 
   /* ================================================================
+   * 4b. デスクトップサイト補正時の固定幅ページ (/user/* 等)
+   *     現行のユーザーページは main.UserPage-main が1280px固定、
+   *     その中の TimelinePage が932px、TimelinePage-content が716px
+   *     で組まれる。980pxレイアウトのまま実効幅360pxへ縮小される
+   *     補正時は、これらを実効幅に従わせて縦積みにする。通常の
+   *     モバイル表示ではサイト自身のレスポンシブCSSが働くため、
+   *     この指定は補正時のみに限定する。
+   * ================================================================ */
+  html.nui-desktop-compensated main[class*='UserPage-main'] {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    /* PC版は右側バナー(300px)用に padding-right を確保している。
+       補正時は解除し、本文を実効幅いっぱいに使う。 */
+    padding-right: 0 !important;
+  }
+  /* ユーザーページのヘッダーは PC版で「左(アバター/統計) +
+     右(プロフィール文)」の1行 flex。実効幅360pxでは両者が
+     0〜1pxへ収縮し、本文が1文字幅で縦積みになって読めないため、
+     縦積みに切り替えて全幅を与える。 */
+  html.nui-desktop-compensated [class*='UserDetailsHeader'] {
+    flex-wrap: wrap !important;
+    align-items: flex-start !important;
+  }
+  html.nui-desktop-compensated [class*='UserDetailsHeader-left'],
+  html.nui-desktop-compensated [class*='UserDetailsHeader-body'] {
+    flex: 0 0 100% !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+  }
+  html.nui-desktop-compensated [class*='MainMenuContainer-menuList'] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: none !important;
+  }
+  html.nui-desktop-compensated
+    [class*='MainMenuContainer-menuList']::-webkit-scrollbar {
+    display: none !important;
+  }
+  html.nui-desktop-compensated
+    [class*='MainMenuContainer-menuList']
+    [class*='NC-Tabs'] {
+    flex: 0 0 auto !important;
+    width: max-content !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    flex-wrap: nowrap !important;
+  }
+  html.nui-desktop-compensated
+    [class*='MainMenuContainer-menuList']
+    [class*='NC-Tab'] {
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+  }
+  html.nui-desktop-compensated [class*='TimelinePage'] {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }
+  html.nui-desktop-compensated [class*='TimelinePage-content'] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+  }
+  html.nui-desktop-compensated [class*='TimelineSideContainer'] {
+    position: static !important;
+    top: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  /* SimpleBar は内部を絶対配置で上部(共通ヘッダー直下)に固定する。
+     補正時は通常フローに戻し、ヘッダーへの重なりを解消する。 */
+  html.nui-desktop-compensated
+    [class*='TimelineSideContainer']
+    [class*='simplebar-offset'],
+  html.nui-desktop-compensated
+    [class*='TimelineSideContainer']
+    [class*='simplebar-mask'] {
+    position: static !important;
+    top: auto !important;
+    height: auto !important;
+  }
+  html.nui-desktop-compensated
+    [class*='TimelineSideContainer']
+    [class*='simplebar-content-wrapper'] {
+    position: static !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  /* ユーザーページの右側バナー枠は PC版で position:absolute の
+     右カラムとして配置される。補正時は通常フローに戻し、
+     メイン内容の下へ縦積みする。 */
+  html.nui-desktop-compensated [class*='RightSideContainer'] {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 0 16px !important;
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+  }
+  /* ユーザーページの空状態メッセージは PC版で 520px 固定のため、
+     補正時は実効幅に収める。 */
+  html.nui-desktop-compensated [class*='BlankState-title'] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+  }
+  html.nui-desktop-compensated [class*='EditBannerFrame'] {
+    max-width: 100% !important;
+  }
+
+  /* ================================================================
    * 5. 旧レイアウトのページ (/video_top、ログアウト時のトップ等)
    *    #root ベースの新レイアウトとは別系統の HTML で、.BaseLayout-* /
    *    .BaseUniLayout-* (1024〜1048px固定) と 80px の常設ドロワーで
