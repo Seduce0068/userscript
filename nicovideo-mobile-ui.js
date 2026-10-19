@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニコニコ動画 PC版URL スマホUI化
 // @namespace    nicovideo-mobile-ui
-// @version      1.3.0
+// @version      1.3.1
 // @description  PC版URL(www.nicovideo.jp)をスマホで開いたとき、幅約1240px前提のPC版レイアウトをスマホ向けUIに再構成する。
 // @author       opencode
 // @match        https://www.nicovideo.jp/*
@@ -36,6 +36,14 @@
    *    data属性)を利用し、ハッシュ化されたclassには依存しない。
    *  - 旧レイアウト(.BaseLayout-*)のページは viewport 指定が無く、
    *    スマホで980px幅に縮小表示されるため、viewport メタを補完する。
+   *  - Android 版 Chrome/Edge の「デスクトップサイト表示」では、
+   *    viewport メタが無視され、レイアウト viewport が 980px のまま
+   *    実画面幅(例: 360px)へ縮小される。この状態では本スクリプトの
+   *    CSS は一致するが、CSS px 自体が約0.37倍で描画されるため
+   *    文字・操作部が読めない。この場合のみ html に
+   *    zoom = レイアウト幅 / 実画面幅 を掛け、実効レイアウト幅を
+   *    実画面幅へ戻す(CONFIG.compensateDesktopViewport)。
+   *    zoom は Chromium と Firefox 126+ で利用できる。
    *  - すべての上書きは @media (max-width: 1239px) 内に限定し、
    *    広い画面では自動的に無効化される。このしきい値は「PC版
    *    キャンバス(約1240px)より狭い」の意味で、1024〜1112px の
@@ -48,6 +56,13 @@
     // PC版レイアウトが前提とする最小キャンバス幅(px)。
     // これより狭い画面でのみ有効化する。
     pcCanvasWidth: 1240,
+    // 「デスクトップサイト表示」でレイアウト幅(通常980px)が実画面幅より
+    // 大きい場合、ルート zoom で実効レイアウト幅を実画面幅へ戻す。
+    // 誤爆を避けるため、タッチ端末・短辺600px以下・DPR2以上・
+    // レイアウト幅700px以上のときだけ適用する。
+    compensateDesktopViewport: true,
+    // 補正倍率の上限。想定外の画面で過大に拡大しないための保険。
+    maxDesktopZoom: 3.5,
     // true にすると最小限の動作ログを console に出す。
     debug: false
   };
@@ -156,6 +171,116 @@
 
   ensureViewportMeta();
 
+  // --- デスクトップサイト表示の補正 ---------------------------------------
+  // Android 版 Chrome/Edge の「デスクトップサイト表示」では、レイアウト
+  // viewport が 980px のまま実画面幅(例: 360px)へ縮小される。この状態
+  // では @media (max-width: 1239px) は一致するが、CSS px が約0.37倍で
+  // 描画されるため、文字・操作部が読めない。ルート zoom を
+  // レイアウト幅 / 実画面幅 にすると、実効レイアウト幅が実画面幅と
+  // 一致し、PC版の機能を保ったまま等倍で表示できる。
+  //
+  // document-start 時点ではページ自身の viewport メタが未解析で
+  // innerWidth が 980 のことがあり、通常のモバイル表示を誤判定する。
+  // 判定は DOMContentLoaded 以降に行い、遅れて適用される viewport
+  // メタや画面回転にも追従する。
+  const getPhysicalWidth = () => {
+    const sw = (window.screen && window.screen.width) || 0;
+    const sh = (window.screen && window.screen.height) || 0;
+    if (!sw || !sh) {
+      return 0;
+    }
+    const landscape =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(orientation: landscape)').matches;
+    return landscape ? Math.max(sw, sh) : Math.min(sw, sh);
+  };
+
+  const isPhoneSizedScreen = () => {
+    const sw = (window.screen && window.screen.width) || 0;
+    const sh = (window.screen && window.screen.height) || 0;
+    return sw > 0 && sh > 0 && Math.min(sw, sh) <= 600;
+  };
+
+  let appliedZoom = 0;
+  let compensationTimer = 0;
+
+  const applyDesktopViewportCompensation = () => {
+    const root = document.documentElement;
+    if (!root) {
+      return;
+    }
+
+    const layoutWidth = window.innerWidth || 0;
+    const physicalWidth = getPhysicalWidth();
+    const shouldCompensate =
+      CONFIG.compensateDesktopViewport &&
+      hasTouch &&
+      isPhoneSizedScreen() &&
+      (window.devicePixelRatio || 1) >= 2 &&
+      physicalWidth > 0 &&
+      layoutWidth >= 700 &&
+      layoutWidth < CONFIG.pcCanvasWidth &&
+      layoutWidth > physicalWidth * 1.15;
+
+    if (!shouldCompensate) {
+      if (appliedZoom) {
+        root.classList.remove('nui-desktop-compensated');
+        root.style.removeProperty('--nui-desktop-zoom');
+        appliedZoom = 0;
+        log('desktop-viewport compensation removed');
+      }
+      return;
+    }
+
+    const zoom = Math.min(
+      CONFIG.maxDesktopZoom,
+      Math.max(1.05, layoutWidth / physicalWidth)
+    );
+    if (
+      root.classList.contains('nui-desktop-compensated') &&
+      Math.abs(zoom - appliedZoom) < 0.002
+    ) {
+      return;
+    }
+    appliedZoom = zoom;
+    root.style.setProperty('--nui-desktop-zoom', zoom.toFixed(3));
+    root.classList.add('nui-desktop-compensated');
+    log(
+      'desktop-viewport compensation',
+      'layout=' + layoutWidth,
+      'physical=' + physicalWidth,
+      'zoom=' + zoom.toFixed(3)
+    );
+  };
+
+  const scheduleCompensation = () => {
+    applyDesktopViewportCompensation();
+    clearTimeout(compensationTimer);
+    compensationTimer = setTimeout(applyDesktopViewportCompensation, 250);
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        scheduleCompensation();
+        // ページ自身の viewport メタが遅れて適用されるケースの保険。
+        setTimeout(applyDesktopViewportCompensation, 1200);
+      },
+      { once: true }
+    );
+  } else {
+    scheduleCompensation();
+    setTimeout(applyDesktopViewportCompensation, 1200);
+  }
+
+  window.addEventListener('resize', scheduleCompensation, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', scheduleCompensation, {
+      passive: true
+    });
+  }
+
   // --- スマホ向けスタイル ------------------------------------------------
   // 上書きは「PC版レイアウトの固定幅・2カラム組み」の解除に限定し、
   // 色・書体などは本体のデザインをそのまま使う。
@@ -189,6 +314,15 @@
   html,
   body {
     overflow-x: hidden !important;
+  }
+
+  /* デスクトップサイト表示の補正。
+     JS が「レイアウト幅 / 実画面幅」を --nui-desktop-zoom に入れ、
+     html.nui-desktop-compensated を付与したときだけ有効化する。
+     実効レイアウト幅が実画面幅と一致するため、PC版レイアウトを
+     保ったまま等倍で表示できる。 */
+  html.nui-desktop-compensated {
+    zoom: var(--nui-desktop-zoom, 1) !important;
   }
 
   /* 左の常設ミニナビ(webDrawer.miniWidth = 88px)を0幅に潰す。
@@ -260,6 +394,72 @@
     display: none !important;
   }
 
+  /* --- 現行(2026-10)のPC版ヘッダー --------------------------------
+     旧 header:has(> a[data-anchor-area='web_header']) とは別に、
+     現行PC版は次の2段で組まれている。
+       div[class*='nico-CommonHeaderRoot']  36px カテゴリナビ
+       header[class*='h_webHeader.height']  56px ロゴ/検索/アカウント
+     どちらも980px前提の固定幅を持ち、デスクトップサイト補正で
+     実効幅360pxになると横にはみ出す。補正時のみ次を行う。
+       - ナビは内容幅を維持したまま横スクロール可能にする
+       - ページヘッダーはロゴを縮小し、検索欄に残り幅を割り当てる */
+  html.nui-desktop-compensated [class*='nico-CommonHeaderRoot'] {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: none !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  html.nui-desktop-compensated
+    [class*='nico-CommonHeaderRoot']::-webkit-scrollbar {
+    display: none !important;
+  }
+  html.nui-desktop-compensated [class*='nico-CommonHeaderRoot'] > div,
+  html.nui-desktop-compensated
+    [class*='nico-CommonHeaderRoot'] > div > div {
+    min-width: 0 !important;
+  }
+  /* 36px ナビの行だけ内容幅を維持し、ルート側で横スクロールさせる。
+     子孫の flex まで縮めるとリンク文字が潰れるため、行のみ
+     max-content とする。 */
+  html.nui-desktop-compensated
+    [class*='nico-CommonHeaderRoot']
+    [class*='common-header-1ykkee8'] {
+    width: max-content !important;
+    min-width: 100% !important;
+  }
+
+  /* 56px ページヘッダー: ロゴを縮小し、検索欄に残り幅を割り当てる。 */
+  html.nui-desktop-compensated header[class*='h_webHeader.height'] {
+    width: 100% !important;
+    min-width: 0 !important;
+    padding-left: 8px !important;
+    padding-right: 4px !important;
+    gap: 4px !important;
+  }
+  html.nui-desktop-compensated header[class*='h_webHeader.height'] > a svg {
+    width: 84px !important;
+    min-width: 0 !important;
+    height: 12px !important;
+  }
+  html.nui-desktop-compensated
+    header[class*='h_webHeader.height']
+    > div[class*='flex-b_webHeaderSearchBar'] {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    margin-left: 4px !important;
+  }
+  html.nui-desktop-compensated
+    header[class*='h_webHeader.height']
+    > div[class*='flex-b_webHeaderSearchBar'] * {
+    min-width: 0 !important;
+  }
+  html.nui-desktop-compensated
+    header[class*='h_webHeader.height']
+    > div[class*='flex-b_webHeaderSearchBar'] form {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
   /* ================================================================
    * 3. 視聴ページ (watch): 2カラムグリッド → 1カラム縦積み
    *    本体は section の CSS Grid で
@@ -282,11 +482,13 @@
     padding-bottom: 8px !important;
   }
 
-  /* プレイヤーの親 (w_fit-content / px_x3) を全幅化し余白を詰める */
+  /* プレイヤーの親 (w_fit-content / px_x3) を全幅化し余白を詰める。
+     max-width は 100% にしておく。デスクトップサイト補正時は
+     サイトJSが inline で 980px 等を設定しても実効幅へ収まる。 */
   [aria-label='nicovideo-content'] > div:first-child {
     display: block !important;
     width: 100% !important;
-    max-width: none !important;
+    max-width: 100% !important;
     padding: 8px 8px 0 !important;
   }
 
