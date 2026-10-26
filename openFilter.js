@@ -10,6 +10,9 @@
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @grant        GM_addValueChangeListener
+// @grant        GM_xmlhttpRequest
+// @connect      api.github.com
+// @connect      gist.githubusercontent.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -18,6 +21,7 @@
 
     const VERSION = '3.0.0';
     const STORAGE_KEY = 'open_filter_state_v3';
+    const SYNC_TOKEN_KEY = 'open_filter_gist_token';
     const HOST_ID = 'open-filter-root';
     const PICKER_ID = 'open-filter-picker';
     const HIDDEN_CLASS = 'open-filter-hidden';
@@ -87,11 +91,28 @@
             version: 3,
             globalEnabled: true,
             sites: Object.create(null),
-            ui: { showInFrames: false }
+            ui: { showInFrames: false },
+            sync: {
+                enabled: false,
+                provider: 'gist',
+                gistId: '',
+                autoUpload: true,
+                autoDownload: true,
+                dirty: false,
+                lastSyncAt: ''
+            }
         };
         if (!raw || typeof raw !== 'object') return out;
         if (raw.globalEnabled === false) out.globalEnabled = false;
         if (raw.ui && raw.ui.showInFrames === true) out.ui.showInFrames = true;
+        if (raw.sync && typeof raw.sync === 'object') {
+            out.sync.enabled = raw.sync.enabled === true;
+            out.sync.gistId = String(raw.sync.gistId || '').slice(0, 100);
+            out.sync.autoUpload = raw.sync.autoUpload !== false;
+            out.sync.autoDownload = raw.sync.autoDownload !== false;
+            out.sync.dirty = raw.sync.dirty === true;
+            out.sync.lastSyncAt = String(raw.sync.lastSyncAt || '').slice(0, 40);
+        }
         if (raw.sites && typeof raw.sites === 'object' && !Array.isArray(raw.sites)) {
             for (const [host, profile] of Object.entries(raw.sites)) {
                 if (!host || !profile || typeof profile !== 'object') continue;
@@ -190,7 +211,12 @@
         return normalizeState(parsed);
     }
 
-    function saveState() {
+    function saveState(options = {}) {
+        const skipSync = options.skipSync === true;
+        if (!skipSync) {
+            state.sync.dirty = true;
+            scheduleSyncUpload();
+        }
         try {
             if (!store.set(STORAGE_KEY, JSON.stringify(state))) {
                 notifySaveFailure();
@@ -209,6 +235,346 @@
             alert('Open Filter: 設定の保存に失敗しました。ストレージの空きを確認してください。');
         } catch (error) {
             console.warn('[Open Filter] 設定を保存できませんでした', error);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // クラウド同期 (GitHub Gist)
+    // ------------------------------------------------------------------
+
+    function getSyncToken() {
+        const value = store.get(SYNC_TOKEN_KEY, '');
+        return typeof value === 'string' ? value : '';
+    }
+
+    function setSyncToken(token) {
+        store.set(SYNC_TOKEN_KEY, String(token || ''));
+    }
+
+    function normalizeGistId(value) {
+        const text = String(value || '').trim();
+        const match = text.match(/([0-9a-f]{20,})/i);
+        return match ? match[1] : text;
+    }
+
+    function formatDateTime(value) {
+        try {
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value || '');
+            return date.toLocaleString();
+        } catch (error) {
+            return String(value || '');
+        }
+    }
+
+    function setSyncStatus(message, isError) {
+        syncStatus = String(message || '');
+        syncStatusIsError = isError === true;
+        if (!uiRoot) return;
+        const element = uiRoot.querySelector('#uf-sync-status');
+        if (!element) return;
+        element.textContent = syncStatus;
+        element.classList.toggle('is-error', syncStatusIsError);
+    }
+
+    function githubRequest(method, url, body, token) {
+        return new Promise((resolve, reject) => {
+            const headers = {
+                'Accept': 'application/vnd.github+json',
+                'Authorization': 'Bearer ' + token,
+                'X-GitHub-Api-Version': '2022-11-28',
+                'User-Agent': 'OpenFilter/3.0'
+            };
+            if (body) headers['Content-Type'] = 'application/json';
+            GM_xmlhttpRequest({
+                method,
+                url,
+                headers,
+                data: body ? JSON.stringify(body) : undefined,
+                timeout: 20000,
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        try {
+                            resolve(response.responseText ? JSON.parse(response.responseText) : null);
+                        } catch (error) {
+                            reject(new Error('GitHub API 応答の解析に失敗しました。'));
+                        }
+                        return;
+                    }
+                    let message = 'GitHub API エラー (' + response.status + ')';
+                    try {
+                        const errorData = JSON.parse(response.responseText);
+                        if (errorData && errorData.message) message += ': ' + errorData.message;
+                    } catch (error) {
+                        // JSON でないエラー応答はステータスのみ表示
+                    }
+                    reject(new Error(message));
+                },
+                onerror: () => reject(new Error('GitHub API への接続に失敗しました。')),
+                ontimeout: () => reject(new Error('GitHub API がタイムアウトしました。'))
+            });
+        });
+    }
+
+    function githubRequestText(url, token) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                headers: {
+                    'Authorization': 'Bearer ' + token,
+                    'User-Agent': 'OpenFilter/3.0'
+                },
+                timeout: 20000,
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        resolve(response.responseText);
+                        return;
+                    }
+                    reject(new Error('Gist ファイルの取得に失敗しました (' + response.status + ')'));
+                },
+                onerror: () => reject(new Error('Gist ファイルへの接続に失敗しました。')),
+                ontimeout: () => reject(new Error('Gist ファイルの取得がタイムアウトしました。'))
+            });
+        });
+    }
+
+    function buildSyncPayload(syncedAt) {
+        return {
+            version: 3,
+            globalEnabled: state.globalEnabled,
+            sites: state.sites,
+            ui: state.ui,
+            sync: {
+                enabled: state.sync.enabled,
+                provider: 'gist',
+                gistId: state.sync.gistId,
+                autoUpload: state.sync.autoUpload,
+                autoDownload: state.sync.autoDownload
+            },
+            syncedAt: syncedAt || new Date().toISOString()
+        };
+    }
+
+    async function syncUpload() {
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            throw new Error('GM_xmlhttpRequest が利用できません。');
+        }
+        if (syncBusy) throw new Error('別の同期処理が実行中です。');
+        const token = getSyncToken();
+        if (!token) throw new Error('GitHub トークンが設定されていません。');
+
+        syncBusy = true;
+        try {
+            state.sync.gistId = normalizeGistId(state.sync.gistId);
+            const syncedAt = new Date().toISOString();
+            const payload = buildSyncPayload(syncedAt);
+            const content = JSON.stringify(payload, null, 2);
+            let gistId = state.sync.gistId;
+            let created = false;
+
+            if (!gistId) {
+                const response = await githubRequest('POST', 'https://api.github.com/gists', {
+                    description: 'Open Filter settings',
+                    public: false,
+                    files: { 'open-filter.json': { content } }
+                }, token);
+                gistId = response.id;
+                state.sync.gistId = gistId;
+                created = true;
+            } else {
+                await githubRequest('PATCH', 'https://api.github.com/gists/' + encodeURIComponent(gistId), {
+                    files: { 'open-filter.json': { content } }
+                }, token);
+            }
+
+            state.sync.lastSyncAt = syncedAt;
+            if (created) {
+                state.sync.dirty = false;
+            } else {
+                // アップロード中に変更がなければ未同期フラグを解除
+                const current = JSON.stringify(buildSyncPayload(syncedAt), null, 2);
+                if (current === content) state.sync.dirty = false;
+            }
+            saveState({ skipSync: true });
+
+            if (uiRoot) {
+                const gistInput = uiRoot.querySelector('#uf-gist-id');
+                if (gistInput) gistInput.value = gistId;
+                renderDataTab();
+            }
+            return { gistId, at: syncedAt, created };
+        } finally {
+            syncBusy = false;
+        }
+    }
+
+    async function syncDownload(options = {}) {
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            throw new Error('GM_xmlhttpRequest が利用できません。');
+        }
+        if (syncBusy) throw new Error('別の同期処理が実行中です。');
+        const silent = options.silent === true;
+        const force = options.force === true;
+        const token = getSyncToken();
+        if (!token) throw new Error('GitHub トークンが設定されていません。');
+
+        state.sync.gistId = normalizeGistId(state.sync.gistId);
+        const gistId = state.sync.gistId;
+        if (!gistId) throw new Error('Gist ID が設定されていません。');
+
+        if (state.sync.dirty && !force) {
+            if (silent) return { skipped: true, reason: 'dirty' };
+            if (!confirm('ローカルに未同期の変更があります。リモートの内容で上書きしますか？')) {
+                return { canceled: true };
+            }
+        }
+
+        syncBusy = true;
+        try {
+            const gist = await githubRequest(
+                'GET',
+                'https://api.github.com/gists/' + encodeURIComponent(gistId),
+                null,
+                token
+            );
+            const file = gist.files && gist.files['open-filter.json'];
+            if (!file) throw new Error('Gist に open-filter.json がありません。');
+            let content = file.content;
+            if (file.truncated && file.raw_url) {
+                content = await githubRequestText(file.raw_url, token);
+            }
+            let data;
+            try {
+                data = JSON.parse(content);
+            } catch (error) {
+                throw new Error('同期データの JSON が不正です。');
+            }
+            if (!data || typeof data !== 'object') {
+                throw new Error('同期データの形式が不正です。');
+            }
+
+            if (!force && state.sync.lastSyncAt && data.syncedAt && data.syncedAt <= state.sync.lastSyncAt) {
+                return { skipped: true, reason: 'up-to-date' };
+            }
+
+            const normalized = normalizeState(data);
+            normalized.sync = {
+                enabled: state.sync.enabled,
+                provider: 'gist',
+                gistId: gistId,
+                autoUpload: state.sync.autoUpload,
+                autoDownload: state.sync.autoDownload,
+                dirty: false,
+                lastSyncAt: data.syncedAt || new Date().toISOString()
+            };
+            state = normalized;
+            saveState({ skipSync: true });
+            refreshPageCss();
+            applyAll();
+            syncObserver();
+            if (uiRoot) renderAll();
+            return { applied: true, remoteSyncedAt: data.syncedAt };
+        } finally {
+            syncBusy = false;
+        }
+    }
+
+    function scheduleSyncUpload() {
+        if (!IS_TOP_FRAME) return;
+        if (!state.sync.enabled || !state.sync.autoUpload) return;
+        if (!getSyncToken()) return;
+        if (syncTimer) clearTimeout(syncTimer);
+        syncTimer = setTimeout(() => {
+            syncTimer = 0;
+            runAutoUpload();
+        }, 5000);
+    }
+
+    async function runAutoUpload() {
+        if (syncBusy) {
+            scheduleSyncUpload();
+            return;
+        }
+        if (!state.sync.enabled || !state.sync.autoUpload) return;
+        if (!getSyncToken()) return;
+        try {
+            await syncUpload();
+            setSyncStatus('自動アップロード完了');
+        } catch (error) {
+            setSyncStatus('自動アップロード失敗: ' + error.message, true);
+        }
+    }
+
+    function initSync() {
+        if (!IS_TOP_FRAME) return;
+        if (!state.sync.enabled) return;
+        if (!getSyncToken()) return;
+        if (state.sync.dirty) {
+            setSyncStatus('未同期の変更があります。アップロードしてください。', true);
+            return;
+        }
+        if (state.sync.autoDownload && state.sync.gistId) {
+            setTimeout(async () => {
+                try {
+                    const result = await syncDownload({ silent: true });
+                    if (result && result.applied) {
+                        setSyncStatus('起動時にリモート設定を適用しました');
+                    } else if (result && result.skipped && result.reason !== 'up-to-date') {
+                        setSyncStatus('自動ダウンロードをスキップしました', true);
+                    }
+                } catch (error) {
+                    setSyncStatus('自動ダウンロード失敗: ' + error.message, true);
+                }
+            }, 1500);
+        }
+    }
+
+    function onSaveSyncSettings() {
+        if (!uiRoot) return;
+        const tokenInput = uiRoot.querySelector('#uf-gist-token');
+        const token = tokenInput.value.trim();
+        if (token) setSyncToken(token);
+        state.sync.enabled = uiRoot.querySelector('#uf-sync-enabled').checked;
+        state.sync.gistId = normalizeGistId(uiRoot.querySelector('#uf-gist-id').value);
+        state.sync.autoUpload = uiRoot.querySelector('#uf-sync-auto-upload').checked;
+        state.sync.autoDownload = uiRoot.querySelector('#uf-sync-auto-download').checked;
+        saveState({ skipSync: true });
+        tokenInput.value = '';
+        setSyncStatus('同期設定を保存しました');
+        renderDataTab();
+    }
+
+    async function onManualUpload() {
+        if (syncBusy) return;
+        setSyncStatus('アップロード中...');
+        try {
+            const result = await syncUpload();
+            setSyncStatus('アップロード完了: ' + formatDateTime(result.at));
+            renderDataTab();
+        } catch (error) {
+            setSyncStatus('アップロード失敗: ' + error.message, true);
+        }
+    }
+
+    async function onManualDownload() {
+        if (syncBusy) return;
+        if (state.sync.dirty && !confirm('ローカルに未同期の変更があります。リモートの内容で上書きしますか？')) {
+            return;
+        }
+        setSyncStatus('ダウンロード中...');
+        try {
+            const result = await syncDownload({ force: true });
+            if (result && result.applied) {
+                setSyncStatus('ダウンロード完了');
+                renderAll();
+            } else if (result && result.canceled) {
+                setSyncStatus('ダウンロードをキャンセルしました');
+            } else {
+                setSyncStatus('リモートに新しい変更はありません');
+            }
+        } catch (error) {
+            setSyncStatus('ダウンロード失敗: ' + error.message, true);
         }
     }
 
@@ -805,7 +1171,7 @@
             font-size: 12px; font-weight: 600; color: #3a3a3c;
         }
         .uf-field input[type="text"], .uf-field input[type="number"],
-        .uf-field select, .uf-field textarea {
+        .uf-field input[type="password"], .uf-field select, .uf-field textarea {
             width: 100%; border: 1px solid #d1d1d6; border-radius: 8px;
             padding: 9px 10px; background: #fff; color: #1c1c1e;
             font: 400 16px/1.4 system-ui, sans-serif;
@@ -827,6 +1193,8 @@
         .uf-hint { margin: 0; font-size: 11px; color: #8e8e93; font-weight: 400; }
         .uf-error { color: #ff3b30; font-size: 12px; font-weight: 600; white-space: pre-wrap; }
         .uf-error.is-info { color: #007aff; }
+        #uf-sync-status.is-error { color: #ff3b30; font-weight: 600; }
+        .uf-hint a { color: #007aff; }
         .uf-actions { display: flex; gap: 8px; flex-wrap: wrap; }
         .uf-actions .uf-btn { flex: 1 1 auto; }
         .uf-presets { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -887,6 +1255,8 @@
             .uf-check { color: #d1d1d6; }
             .uf-presets button { background: #3a3a3c; border-color: #48484a; color: #f2f2f7; }
             code { background: #3a3a3c; }
+            #uf-sync-status.is-error { color: #ff453a; }
+            .uf-hint a { color: #0a84ff; }
         }
     `;
 
@@ -953,6 +1323,26 @@
                     </section>
                     <section id="uf-tab-data" class="uf-tabpanel" hidden>
                         <div class="uf-card">
+                            <h3>クラウド同期（GitHub Gist）</h3>
+                            <label class="uf-check"><input type="checkbox" id="uf-sync-enabled"> 同期を有効にする</label>
+                            <label class="uf-field">GitHub トークン（gist スコープ）
+                                <input type="password" id="uf-gist-token" autocomplete="off" placeholder="保存済みの場合は空欄">
+                            </label>
+                            <label class="uf-field">Gist ID（空なら新規作成）
+                                <input type="text" id="uf-gist-id" spellcheck="false" placeholder="自動で設定されます">
+                            </label>
+                            <label class="uf-check"><input type="checkbox" id="uf-sync-auto-upload"> 変更時に自動アップロード</label>
+                            <label class="uf-check"><input type="checkbox" id="uf-sync-auto-download"> 起動時に自動ダウンロード</label>
+                            <div class="uf-actions">
+                                <button type="button" id="uf-sync-save" class="uf-btn">同期設定を保存</button>
+                                <button type="button" id="uf-sync-upload" class="uf-btn">アップロード</button>
+                                <button type="button" id="uf-sync-download" class="uf-btn">ダウンロード</button>
+                            </div>
+                            <p class="uf-muted" id="uf-sync-status"></p>
+                            <p class="uf-hint"><a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=Open%20Filter" target="_blank" rel="noopener noreferrer">GitHub で gist スコープのトークンを発行</a></p>
+                            <p class="uf-hint">トークンはこの端末にのみ保存され、エクスポートには含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
+                        </div>
+                        <div class="uf-card">
                             <h3>バックアップ</h3>
                             <p class="uf-muted">設定はブラウザ内（GMストレージ）に保存されます。</p>
                             <div class="uf-actions">
@@ -989,6 +1379,13 @@
                                 <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。</li>
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
                                 <li>SPAのURL変更にも追従します。</li>
+                            </ul>
+                            <h3>クラウド同期</h3>
+                            <ul>
+                                <li>「データ」タブで GitHub の gist スコープのトークンを設定します。</li>
+                                <li>「アップロード」で Gist を作成または更新し、「ダウンロード」で取得します。</li>
+                                <li>トークンは端末内にのみ保存され、Gist やエクスポートには含まれません。</li>
+                                <li>Gist は secret ですが、URL を知っている人は閲覧できます。</li>
                             </ul>
                             <h3>困ったとき</h3>
                             <ul>
@@ -1102,6 +1499,10 @@
     let editingId = null;
     let pickerState = null;
     let lastUrl = location.href;
+    let syncStatus = '';
+    let syncStatusIsError = false;
+    let syncBusy = false;
+    let syncTimer = 0;
 
     function createUi() {
         if (uiHost) return;
@@ -1110,7 +1511,8 @@
         uiHost = document.createElement('div');
         uiHost.id = HOST_ID;
         uiHost.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
-        uiRoot = uiHost.attachShadow({ mode: 'open' });
+        // トークンを扱うため、ページスクリプトから shadow root を参照できない closed にする
+        uiRoot = uiHost.attachShadow({ mode: 'closed' });
 
         const style = document.createElement('style');
         style.textContent = UI_CSS;
@@ -1220,6 +1622,18 @@
         query('#uf-import-site').addEventListener('click', () => query('#uf-file-site').click());
         query('#uf-file-all').addEventListener('change', importAllFile);
         query('#uf-file-site').addEventListener('change', importSiteFile);
+        query('#uf-sync-save').addEventListener('click', (event) => {
+            if (!event.isTrusted) return;
+            onSaveSyncSettings();
+        });
+        query('#uf-sync-upload').addEventListener('click', (event) => {
+            if (!event.isTrusted) return;
+            onManualUpload();
+        });
+        query('#uf-sync-download').addEventListener('click', (event) => {
+            if (!event.isTrusted) return;
+            onManualDownload();
+        });
         query('#uf-reset').addEventListener('click', (event) => {
             if (!event.isTrusted) return;
             resetAll();
@@ -1682,7 +2096,7 @@
         const pickerHost = document.createElement('div');
         pickerHost.id = PICKER_ID;
         pickerHost.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
-        const root = pickerHost.attachShadow({ mode: 'open' });
+        const root = pickerHost.attachShadow({ mode: 'closed' });
 
         const style = document.createElement('style');
         style.textContent = `
@@ -1913,6 +2327,23 @@
         } catch (error) {
             element.textContent = 'サイズを取得できませんでした。';
         }
+
+        const query = (selector) => uiRoot.querySelector(selector);
+        const syncEnabled = query('#uf-sync-enabled');
+        if (syncEnabled) {
+            syncEnabled.checked = state.sync.enabled;
+            query('#uf-sync-auto-upload').checked = state.sync.autoUpload;
+            query('#uf-sync-auto-download').checked = state.sync.autoDownload;
+            const gistInput = query('#uf-gist-id');
+            if (uiRoot.activeElement !== gistInput) gistInput.value = state.sync.gistId;
+            const token = getSyncToken();
+            query('#uf-gist-token').placeholder = token ? '保存済み（変更する場合のみ入力）' : 'ghp_...';
+            const status = query('#uf-sync-status');
+            status.textContent = syncStatus || (state.sync.lastSyncAt
+                ? '最終同期: ' + formatDateTime(state.sync.lastSyncAt)
+                : '未同期');
+            status.classList.toggle('is-error', syncStatusIsError);
+        }
     }
 
     function formatBytes(bytes) {
@@ -2024,9 +2455,21 @@
             version: 3,
             globalEnabled: true,
             sites: Object.create(null),
-            ui: { showInFrames: false }
+            ui: { showInFrames: false },
+            sync: {
+                enabled: false,
+                provider: 'gist',
+                gistId: '',
+                autoUpload: true,
+                autoDownload: true,
+                dirty: false,
+                lastSyncAt: ''
+            }
         };
-        saveState();
+        store.set(SYNC_TOKEN_KEY, '');
+        syncStatus = '';
+        syncStatusIsError = false;
+        saveState({ skipSync: true });
         refreshPageCss();
         applyAll();
         syncObserver();
@@ -2125,6 +2568,7 @@
                 refreshPageCss();
                 applyAll();
                 syncObserver();
+                scheduleSyncUpload();
                 if (!uiRoot) return;
                 renderAll();
                 if (editingId) {
@@ -2145,6 +2589,7 @@
         hookHistory();
         if (IS_TOP_FRAME) registerMenu();
         watchStorage();
+        initSync();
     }
 
     if (document.readyState === 'loading') {
