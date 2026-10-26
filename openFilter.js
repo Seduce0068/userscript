@@ -5,7 +5,6 @@
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
 // @author       opencode
 // @match        *://*/*
-// @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addStyle
@@ -27,6 +26,7 @@
     const MAX_TEXT = 4000;
     const MAX_PATTERN = 500;
     const MAX_PATTERNS = 50;
+    const IS_TOP_FRAME = window.top === window.self;
 
     // ------------------------------------------------------------------
     // ストレージ (GM_* API / localStorage フォールバック)
@@ -83,9 +83,15 @@
     }
 
     function normalizeState(raw) {
-        const out = { version: 3, globalEnabled: true, sites: Object.create(null) };
+        const out = {
+            version: 3,
+            globalEnabled: true,
+            sites: Object.create(null),
+            ui: { showInFrames: false }
+        };
         if (!raw || typeof raw !== 'object') return out;
         if (raw.globalEnabled === false) out.globalEnabled = false;
+        if (raw.ui && raw.ui.showInFrames === true) out.ui.showInFrames = true;
         if (raw.sites && typeof raw.sites === 'object' && !Array.isArray(raw.sites)) {
             for (const [host, profile] of Object.entries(raw.sites)) {
                 if (!host || !profile || typeof profile !== 'object') continue;
@@ -931,6 +937,11 @@
                             <p class="uf-muted">設定はホスト名ごとに保存されます。ルールの「適用パス」でページを限定できます。</p>
                         </div>
                         <div class="uf-card">
+                            <h3>フレーム</h3>
+                            <label class="uf-check"><input type="checkbox" id="uf-show-frames"> iframe 内にも設定ボタンを表示</label>
+                            <p class="uf-muted">全サイト共通の設定です。変更はリロード後に反映されます。iframe 内のルールは、その iframe のホスト名で保存されます。</p>
+                        </div>
+                        <div class="uf-card">
                             <h3>ページ</h3>
                             <label class="uf-check"><input type="checkbox" id="uf-here-only"> 現在のページのルールだけ表示</label>
                             <p class="uf-muted">現在のパス: <code id="uf-site-path"></code></p>
@@ -1094,6 +1105,8 @@
 
     function createUi() {
         if (uiHost) return;
+        // iframe 内は既定で適用のみ。設定で明示的に有効化した場合だけ UI を出す
+        if (!IS_TOP_FRAME && !state.ui.showInFrames) return;
         uiHost = document.createElement('div');
         uiHost.id = HOST_ID;
         uiHost.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
@@ -1188,6 +1201,11 @@
             applyAll();
             syncObserver();
             renderAll();
+        });
+        query('#uf-show-frames').addEventListener('change', (event) => {
+            if (!event.isTrusted) return;
+            state.ui.showInFrames = event.target.checked;
+            saveState();
         });
         query('#uf-here-only').addEventListener('change', renderRuleList);
         query('#uf-site-delete').addEventListener('click', (event) => {
@@ -1874,6 +1892,7 @@
         const profile = getProfile(false);
         query('#uf-site-host').textContent = location.host;
         query('#uf-site-enabled').checked = profile ? profile.enabled : false;
+        query('#uf-show-frames').checked = state.ui.showInFrames;
         query('#uf-site-path').textContent = location.pathname;
         const count = profile ? profile.rules.length : 0;
         const active = profile ? profile.rules.filter((rule) => rule.enabled && pageMatches(rule)).length : 0;
@@ -2001,7 +2020,12 @@
 
     function resetAll() {
         if (!confirm('すべてのサイトの設定を削除します。よろしいですか？')) return;
-        state = { version: 3, globalEnabled: true, sites: Object.create(null) };
+        state = {
+            version: 3,
+            globalEnabled: true,
+            sites: Object.create(null),
+            ui: { showInFrames: false }
+        };
         saveState();
         refreshPageCss();
         applyAll();
@@ -2112,7 +2136,7 @@
         applyAll();
         syncObserver();
         hookHistory();
-        registerMenu();
+        if (IS_TOP_FRAME) registerMenu();
         watchStorage();
     }
 
