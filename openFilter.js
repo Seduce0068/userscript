@@ -13,6 +13,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      api.github.com
 // @connect      gist.githubusercontent.com
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -22,6 +24,7 @@
     const VERSION = '3.0.0';
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
+    const SYNC_GAS_KEY = 'open_filter_gas_key';
     const HOST_ID = 'open-filter-root';
     const PICKER_ID = 'open-filter-picker';
     const HIDDEN_CLASS = 'open-filter-hidden';
@@ -96,6 +99,7 @@
                 enabled: false,
                 provider: 'gist',
                 gistId: '',
+                gasUrl: '',
                 autoUpload: true,
                 autoDownload: true,
                 dirty: false,
@@ -107,7 +111,9 @@
         if (raw.ui && raw.ui.showInFrames === true) out.ui.showInFrames = true;
         if (raw.sync && typeof raw.sync === 'object') {
             out.sync.enabled = raw.sync.enabled === true;
+            out.sync.provider = raw.sync.provider === 'gas' ? 'gas' : 'gist';
             out.sync.gistId = String(raw.sync.gistId || '').slice(0, 100);
+            out.sync.gasUrl = String(raw.sync.gasUrl || '').slice(0, 1000);
             out.sync.autoUpload = raw.sync.autoUpload !== false;
             out.sync.autoDownload = raw.sync.autoDownload !== false;
             out.sync.dirty = raw.sync.dirty === true;
@@ -251,6 +257,26 @@
         store.set(SYNC_TOKEN_KEY, String(token || ''));
     }
 
+    function getGasKey() {
+        const value = store.get(SYNC_GAS_KEY, '');
+        return typeof value === 'string' ? value : '';
+    }
+
+    function setGasKey(key) {
+        store.set(SYNC_GAS_KEY, String(key || ''));
+    }
+
+    function getSyncProvider() {
+        return state.sync.provider === 'gas' ? 'gas' : 'gist';
+    }
+
+    function syncReady() {
+        if (getSyncProvider() === 'gas') {
+            return Boolean(String(state.sync.gasUrl || '').trim() && getGasKey());
+        }
+        return Boolean(getSyncToken());
+    }
+
     function normalizeGistId(value) {
         const text = String(value || '').trim();
         const match = text.match(/([0-9a-f]{20,})/i);
@@ -339,6 +365,57 @@
         });
     }
 
+    function gasRequest(method, content) {
+        return new Promise((resolve, reject) => {
+            const url = String(state.sync.gasUrl || '').trim();
+            const key = getGasKey();
+            if (!url) {
+                reject(new Error('GAS の Web アプリ URL が設定されていません。'));
+                return;
+            }
+            if (!key) {
+                reject(new Error('GAS の共有キーが設定されていません。'));
+                return;
+            }
+
+            const headers = { 'User-Agent': 'OpenFilter/3.0' };
+            let requestUrl = url;
+            let data;
+            if (method === 'GET') {
+                requestUrl += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
+            } else {
+                headers['Content-Type'] = 'text/plain;charset=UTF-8';
+                data = JSON.stringify({ key, content });
+            }
+
+            GM_xmlhttpRequest({
+                method,
+                url: requestUrl,
+                headers,
+                data,
+                timeout: 20000,
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        try {
+                            const parsed = JSON.parse(response.responseText);
+                            if (parsed && parsed.error) {
+                                reject(new Error('GAS: ' + parsed.error));
+                                return;
+                            }
+                            resolve(parsed);
+                        } catch (error) {
+                            reject(new Error('GAS の応答を解析できませんでした。'));
+                        }
+                        return;
+                    }
+                    reject(new Error('GAS エラー (' + response.status + ')'));
+                },
+                onerror: () => reject(new Error('GAS への接続に失敗しました。')),
+                ontimeout: () => reject(new Error('GAS がタイムアウトしました。'))
+            });
+        });
+    }
+
     function buildSyncPayload(syncedAt) {
         return {
             version: 3,
@@ -347,8 +424,9 @@
             ui: state.ui,
             sync: {
                 enabled: state.sync.enabled,
-                provider: 'gist',
+                provider: getSyncProvider(),
                 gistId: state.sync.gistId,
+                gasUrl: state.sync.gasUrl,
                 autoUpload: state.sync.autoUpload,
                 autoDownload: state.sync.autoDownload
             },
@@ -361,49 +439,73 @@
             throw new Error('GM_xmlhttpRequest が利用できません。');
         }
         if (syncBusy) throw new Error('別の同期処理が実行中です。');
-        const token = getSyncToken();
-        if (!token) throw new Error('GitHub トークンが設定されていません。');
+
+        const provider = getSyncProvider();
+        if (provider === 'gist' && !getSyncToken()) {
+            throw new Error('GitHub トークンが設定されていません。');
+        }
+        if (provider === 'gas') {
+            if (!String(state.sync.gasUrl || '').trim()) {
+                throw new Error('GAS の Web アプリ URL が設定されていません。');
+            }
+            if (!getGasKey()) throw new Error('GAS の共有キーが設定されていません。');
+        }
 
         syncBusy = true;
         try {
-            state.sync.gistId = normalizeGistId(state.sync.gistId);
             const syncedAt = new Date().toISOString();
             const payload = buildSyncPayload(syncedAt);
             const content = JSON.stringify(payload, null, 2);
-            let gistId = state.sync.gistId;
-            let created = false;
+            let result;
 
-            if (!gistId) {
-                const response = await githubRequest('POST', 'https://api.github.com/gists', {
-                    description: 'Open Filter settings',
-                    public: false,
-                    files: { 'open-filter.json': { content } }
-                }, token);
-                gistId = response.id;
-                state.sync.gistId = gistId;
-                created = true;
+            if (provider === 'gas') {
+                await gasRequest('POST', content);
+                const current = JSON.stringify(buildSyncPayload(syncedAt), null, 2);
+                if (current === content) state.sync.dirty = false;
+                result = { provider, at: syncedAt };
             } else {
-                await githubRequest('PATCH', 'https://api.github.com/gists/' + encodeURIComponent(gistId), {
-                    files: { 'open-filter.json': { content } }
-                }, token);
+                const token = getSyncToken();
+                state.sync.gistId = normalizeGistId(state.sync.gistId);
+                let gistId = state.sync.gistId;
+                let created = false;
+
+                if (!gistId) {
+                    const response = await githubRequest('POST', 'https://api.github.com/gists', {
+                        description: 'Open Filter settings',
+                        public: false,
+                        files: { 'open-filter.json': { content } }
+                    }, token);
+                    gistId = response.id;
+                    state.sync.gistId = gistId;
+                    created = true;
+                } else {
+                    await githubRequest('PATCH', 'https://api.github.com/gists/' + encodeURIComponent(gistId), {
+                        files: { 'open-filter.json': { content } }
+                    }, token);
+                }
+
+                if (created) {
+                    state.sync.dirty = false;
+                } else {
+                    // アップロード中に変更がなければ未同期フラグを解除
+                    const current = JSON.stringify(buildSyncPayload(syncedAt), null, 2);
+                    if (current === content) state.sync.dirty = false;
+                }
+                result = { provider, gistId, at: syncedAt, created };
             }
 
             state.sync.lastSyncAt = syncedAt;
-            if (created) {
-                state.sync.dirty = false;
-            } else {
-                // アップロード中に変更がなければ未同期フラグを解除
-                const current = JSON.stringify(buildSyncPayload(syncedAt), null, 2);
-                if (current === content) state.sync.dirty = false;
-            }
             saveState({ skipSync: true });
+            scheduleSyncPoll();
 
             if (uiRoot) {
-                const gistInput = uiRoot.querySelector('#uf-gist-id');
-                if (gistInput) gistInput.value = gistId;
+                if (provider === 'gist' && result.gistId) {
+                    const gistInput = uiRoot.querySelector('#uf-gist-id');
+                    if (gistInput) gistInput.value = result.gistId;
+                }
                 renderDataTab();
             }
-            return { gistId, at: syncedAt, created };
+            return result;
         } finally {
             syncBusy = false;
         }
@@ -416,12 +518,21 @@
         if (syncBusy) throw new Error('別の同期処理が実行中です。');
         const silent = options.silent === true;
         const force = options.force === true;
-        const token = getSyncToken();
-        if (!token) throw new Error('GitHub トークンが設定されていません。');
+        const provider = getSyncProvider();
 
-        state.sync.gistId = normalizeGistId(state.sync.gistId);
-        const gistId = state.sync.gistId;
-        if (!gistId) throw new Error('Gist ID が設定されていません。');
+        if (provider === 'gist' && !getSyncToken()) {
+            throw new Error('GitHub トークンが設定されていません。');
+        }
+        if (provider === 'gas') {
+            if (!String(state.sync.gasUrl || '').trim()) {
+                throw new Error('GAS の Web アプリ URL が設定されていません。');
+            }
+            if (!getGasKey()) throw new Error('GAS の共有キーが設定されていません。');
+        }
+        if (provider === 'gist') {
+            state.sync.gistId = normalizeGistId(state.sync.gistId);
+            if (!state.sync.gistId) throw new Error('Gist ID が設定されていません。');
+        }
 
         if (state.sync.dirty && !force) {
             if (silent) return { skipped: true, reason: 'dirty' };
@@ -432,23 +543,29 @@
 
         syncBusy = true;
         try {
-            const gist = await githubRequest(
-                'GET',
-                'https://api.github.com/gists/' + encodeURIComponent(gistId),
-                null,
-                token
-            );
-            const file = gist.files && gist.files['open-filter.json'];
-            if (!file) throw new Error('Gist に open-filter.json がありません。');
-            let content = file.content;
-            if (file.truncated && file.raw_url) {
-                content = await githubRequestText(file.raw_url, token);
-            }
             let data;
-            try {
-                data = JSON.parse(content);
-            } catch (error) {
-                throw new Error('同期データの JSON が不正です。');
+            if (provider === 'gas') {
+                data = await gasRequest('GET');
+            } else {
+                const token = getSyncToken();
+                const gistId = state.sync.gistId;
+                const gist = await githubRequest(
+                    'GET',
+                    'https://api.github.com/gists/' + encodeURIComponent(gistId),
+                    null,
+                    token
+                );
+                const file = gist.files && gist.files['open-filter.json'];
+                if (!file) throw new Error('Gist に open-filter.json がありません。');
+                let content = file.content;
+                if (file.truncated && file.raw_url) {
+                    content = await githubRequestText(file.raw_url, token);
+                }
+                try {
+                    data = JSON.parse(content);
+                } catch (error) {
+                    throw new Error('同期データの JSON が不正です。');
+                }
             }
             if (!data || typeof data !== 'object') {
                 throw new Error('同期データの形式が不正です。');
@@ -461,8 +578,9 @@
             const normalized = normalizeState(data);
             normalized.sync = {
                 enabled: state.sync.enabled,
-                provider: 'gist',
-                gistId: gistId,
+                provider: provider,
+                gistId: state.sync.gistId,
+                gasUrl: state.sync.gasUrl,
                 autoUpload: state.sync.autoUpload,
                 autoDownload: state.sync.autoDownload,
                 dirty: false,
@@ -470,6 +588,7 @@
             };
             state = normalized;
             saveState({ skipSync: true });
+            scheduleSyncPoll();
             refreshPageCss();
             applyAll();
             syncObserver();
@@ -483,7 +602,7 @@
     function scheduleSyncUpload() {
         if (!IS_TOP_FRAME) return;
         if (!state.sync.enabled || !state.sync.autoUpload) return;
-        if (!getSyncToken()) return;
+        if (!syncReady()) return;
         if (syncTimer) clearTimeout(syncTimer);
         syncTimer = setTimeout(() => {
             syncTimer = 0;
@@ -497,7 +616,7 @@
             return;
         }
         if (!state.sync.enabled || !state.sync.autoUpload) return;
-        if (!getSyncToken()) return;
+        if (!syncReady()) return;
         try {
             await syncUpload();
             setSyncStatus('自動アップロード完了');
@@ -506,15 +625,54 @@
         }
     }
 
+    function scheduleSyncPoll() {
+        if (!IS_TOP_FRAME) return;
+        if (!state.sync.enabled || !state.sync.autoDownload) return;
+        if (!syncReady()) return;
+        if (pollTimer) clearTimeout(pollTimer);
+        pollTimer = setTimeout(runSyncPoll, 5 * 60 * 1000);
+    }
+
+    async function runSyncPoll() {
+        pollTimer = 0;
+        if (!IS_TOP_FRAME) return;
+        if (!state.sync.enabled || !state.sync.autoDownload || !syncReady()) return;
+        if (document.hidden) {
+            scheduleSyncPoll();
+            return;
+        }
+        if (!syncBusy) {
+            try {
+                const result = await syncDownload({ silent: true });
+                if (result && result.applied) setSyncStatus('リモートの変更を適用しました');
+            } catch (error) {
+                setSyncStatus('定期同期に失敗: ' + error.message, true);
+            }
+        }
+        scheduleSyncPoll();
+    }
+
     function initSync() {
         if (!IS_TOP_FRAME) return;
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) return;
+            if (pollTimer) clearTimeout(pollTimer);
+            runSyncPoll();
+        });
+        window.addEventListener('online', () => {
+            if (document.hidden) return;
+            if (pollTimer) clearTimeout(pollTimer);
+            runSyncPoll();
+        });
+
         if (!state.sync.enabled) return;
-        if (!getSyncToken()) return;
+        if (!syncReady()) return;
         if (state.sync.dirty) {
             setSyncStatus('未同期の変更があります。アップロードしてください。', true);
             return;
         }
-        if (state.sync.autoDownload && state.sync.gistId) {
+        if (state.sync.autoDownload && (state.sync.gistId || state.sync.gasUrl)) {
             setTimeout(async () => {
                 try {
                     const result = await syncDownload({ silent: true });
@@ -528,21 +686,42 @@
                 }
             }, 1500);
         }
+        scheduleSyncPoll();
     }
 
     function onSaveSyncSettings() {
         if (!uiRoot) return;
-        const tokenInput = uiRoot.querySelector('#uf-gist-token');
-        const token = tokenInput.value.trim();
-        if (token) setSyncToken(token);
+        const provider = uiRoot.querySelector('#uf-sync-provider').value === 'gas' ? 'gas' : 'gist';
+        state.sync.provider = provider;
         state.sync.enabled = uiRoot.querySelector('#uf-sync-enabled').checked;
-        state.sync.gistId = normalizeGistId(uiRoot.querySelector('#uf-gist-id').value);
         state.sync.autoUpload = uiRoot.querySelector('#uf-sync-auto-upload').checked;
         state.sync.autoDownload = uiRoot.querySelector('#uf-sync-auto-download').checked;
+
+        if (provider === 'gist') {
+            const tokenInput = uiRoot.querySelector('#uf-gist-token');
+            const token = tokenInput.value.trim();
+            if (token) setSyncToken(token);
+            state.sync.gistId = normalizeGistId(uiRoot.querySelector('#uf-gist-id').value);
+            tokenInput.value = '';
+        } else {
+            state.sync.gasUrl = uiRoot.querySelector('#uf-gas-url').value.trim();
+            const keyInput = uiRoot.querySelector('#uf-gas-key');
+            const key = keyInput.value.trim();
+            if (key) setGasKey(key);
+            keyInput.value = '';
+        }
+
         saveState({ skipSync: true });
-        tokenInput.value = '';
         setSyncStatus('同期設定を保存しました');
         renderDataTab();
+        scheduleSyncPoll();
+    }
+
+    function updateSyncProviderFields() {
+        if (!uiRoot) return;
+        const provider = uiRoot.querySelector('#uf-sync-provider').value;
+        uiRoot.querySelector('#uf-gist-fields').hidden = provider !== 'gist';
+        uiRoot.querySelector('#uf-gas-fields').hidden = provider !== 'gas';
     }
 
     async function onManualUpload() {
@@ -1323,24 +1502,41 @@
                     </section>
                     <section id="uf-tab-data" class="uf-tabpanel" hidden>
                         <div class="uf-card">
-                            <h3>クラウド同期（GitHub Gist）</h3>
+                            <h3>クラウド同期</h3>
                             <label class="uf-check"><input type="checkbox" id="uf-sync-enabled"> 同期を有効にする</label>
-                            <label class="uf-field">GitHub トークン（gist スコープ）
-                                <input type="password" id="uf-gist-token" autocomplete="off" placeholder="保存済みの場合は空欄">
+                            <label class="uf-field">同期方法
+                                <select id="uf-sync-provider">
+                                    <option value="gist">GitHub Gist</option>
+                                    <option value="gas">Google Apps Script</option>
+                                </select>
                             </label>
-                            <label class="uf-field">Gist ID（空なら新規作成）
-                                <input type="text" id="uf-gist-id" spellcheck="false" placeholder="自動で設定されます">
-                            </label>
+                            <div id="uf-gist-fields">
+                                <label class="uf-field">GitHub トークン（gist スコープ）
+                                    <input type="password" id="uf-gist-token" autocomplete="off" placeholder="保存済みの場合は空欄">
+                                </label>
+                                <label class="uf-field">Gist ID（空なら新規作成）
+                                    <input type="text" id="uf-gist-id" spellcheck="false" placeholder="自動で設定されます">
+                                </label>
+                                <p class="uf-hint"><a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=Open%20Filter" target="_blank" rel="noopener noreferrer">GitHub で gist スコープのトークンを発行</a></p>
+                            </div>
+                            <div id="uf-gas-fields" hidden>
+                                <label class="uf-field">GAS Web アプリ URL
+                                    <input type="text" id="uf-gas-url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec">
+                                </label>
+                                <label class="uf-field">共有キー
+                                    <input type="password" id="uf-gas-key" autocomplete="off" placeholder="保存済みの場合は空欄">
+                                </label>
+                                <p class="uf-hint">Google Apps Script の Web アプリとしてデプロイし、URL と共有キーを設定します。OAuth は不要です。</p>
+                            </div>
                             <label class="uf-check"><input type="checkbox" id="uf-sync-auto-upload"> 変更時に自動アップロード</label>
-                            <label class="uf-check"><input type="checkbox" id="uf-sync-auto-download"> 起動時に自動ダウンロード</label>
+                            <label class="uf-check"><input type="checkbox" id="uf-sync-auto-download"> 起動時・5分ごとに自動ダウンロード</label>
                             <div class="uf-actions">
                                 <button type="button" id="uf-sync-save" class="uf-btn">同期設定を保存</button>
                                 <button type="button" id="uf-sync-upload" class="uf-btn">アップロード</button>
                                 <button type="button" id="uf-sync-download" class="uf-btn">ダウンロード</button>
                             </div>
                             <p class="uf-muted" id="uf-sync-status"></p>
-                            <p class="uf-hint"><a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=Open%20Filter" target="_blank" rel="noopener noreferrer">GitHub で gist スコープのトークンを発行</a></p>
-                            <p class="uf-hint">トークンはこの端末にのみ保存され、エクスポートには含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
+                            <p class="uf-hint">トークンと共有キーはこの端末にのみ保存され、エクスポートには含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
                         </div>
                         <div class="uf-card">
                             <h3>バックアップ</h3>
@@ -1503,6 +1699,7 @@
     let syncStatusIsError = false;
     let syncBusy = false;
     let syncTimer = 0;
+    let pollTimer = 0;
 
     function createUi() {
         if (uiHost) return;
@@ -1622,6 +1819,7 @@
         query('#uf-import-site').addEventListener('click', () => query('#uf-file-site').click());
         query('#uf-file-all').addEventListener('change', importAllFile);
         query('#uf-file-site').addEventListener('change', importSiteFile);
+        query('#uf-sync-provider').addEventListener('change', updateSyncProviderFields);
         query('#uf-sync-save').addEventListener('click', (event) => {
             if (!event.isTrusted) return;
             onSaveSyncSettings();
@@ -2334,10 +2532,16 @@
             syncEnabled.checked = state.sync.enabled;
             query('#uf-sync-auto-upload').checked = state.sync.autoUpload;
             query('#uf-sync-auto-download').checked = state.sync.autoDownload;
+            query('#uf-sync-provider').value = getSyncProvider();
             const gistInput = query('#uf-gist-id');
             if (uiRoot.activeElement !== gistInput) gistInput.value = state.sync.gistId;
             const token = getSyncToken();
             query('#uf-gist-token').placeholder = token ? '保存済み（変更する場合のみ入力）' : 'ghp_...';
+            const gasUrlInput = query('#uf-gas-url');
+            if (uiRoot.activeElement !== gasUrlInput) gasUrlInput.value = state.sync.gasUrl;
+            const gasKey = getGasKey();
+            query('#uf-gas-key').placeholder = gasKey ? '保存済み（変更する場合のみ入力）' : '共有キー';
+            updateSyncProviderFields();
             const status = query('#uf-sync-status');
             status.textContent = syncStatus || (state.sync.lastSyncAt
                 ? '最終同期: ' + formatDateTime(state.sync.lastSyncAt)
@@ -2460,6 +2664,7 @@
                 enabled: false,
                 provider: 'gist',
                 gistId: '',
+                gasUrl: '',
                 autoUpload: true,
                 autoDownload: true,
                 dirty: false,
@@ -2467,6 +2672,15 @@
             }
         };
         store.set(SYNC_TOKEN_KEY, '');
+        store.set(SYNC_GAS_KEY, '');
+        if (syncTimer) {
+            clearTimeout(syncTimer);
+            syncTimer = 0;
+        }
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = 0;
+        }
         syncStatus = '';
         syncStatusIsError = false;
         saveState({ skipSync: true });
