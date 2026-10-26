@@ -2114,6 +2114,13 @@
             if (typeof GM_addValueChangeListener !== 'function') return;
             GM_addValueChangeListener(STORAGE_KEY, (name, oldValue, newValue, remote) => {
                 if (!remote || newValue == null) return;
+                // FireMonkey は同一タブの変更も remote=true で通知するため、
+                // 自分の保存と同一内容なら再読み込みしない
+                try {
+                    if (newValue === JSON.stringify(state)) return;
+                } catch (error) {
+                    // 比較できない場合は通常の再読み込みに進む
+                }
                 state = loadState();
                 refreshPageCss();
                 applyAll();
