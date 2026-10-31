@@ -341,11 +341,13 @@
     canvas.height = size;
     const context = canvas.getContext('2d');
     if (!context) return '';
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
     if (background) {
       context.fillStyle = background;
       context.fillRect(0, 0, size, size);
     }
-    const safeRatio = maskable ? 0.8 : 0.9;
+    const safeRatio = maskable ? 0.8 : 1;
     const max = size * safeRatio;
     const scale = Math.min(max / image.width, max / image.height);
     const width = image.width * scale;
