@@ -47,6 +47,7 @@
   let ownLink = null;
   let manifestUrl = '';
   let manifestObserver = null;
+  let overrideObserver = null;
   let refreshTimer = 0;
 
   const ownLinks = new WeakSet();
@@ -425,19 +426,89 @@
     return manifest;
   };
 
-  const hasForeignManifest = () => {
+  const fetchManifestJson = async (sourceUrl) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(sourceUrl, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (error) {
+      warn('failed to fetch existing manifest', error);
+      return null;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+
+  const buildOverriddenManifest = async (foreignLink) => {
+    const sourceUrl = foreignLink.href;
+    const raw = await fetchManifestJson(sourceUrl);
+    if (!raw || typeof raw !== 'object') return null;
+
+    const startUrl = new URL(
+      typeof raw.start_url === 'string' ? raw.start_url : '/',
+      sourceUrl
+    ).href;
+    const name = raw.name || buildName();
+    const background = raw.background_color || pageBackground();
+    const manifest = Object.assign({}, raw, {
+      id: raw.id ? new URL(raw.id, sourceUrl).href : startUrl,
+      name,
+      short_name: raw.short_name || buildShortName(name),
+      start_url: startUrl,
+      scope: raw.scope
+        ? new URL(raw.scope, sourceUrl).href
+        : new URL('.', startUrl).href,
+      display: 'standalone',
+      prefer_related_applications: false,
+      theme_color: raw.theme_color || pageBackground(),
+      background_color: background,
+      icons: []
+    });
+
+    delete manifest.display_override;
+
+    if (Array.isArray(raw.icons)) {
+      manifest.icons = raw.icons
+        .filter((icon) => icon && typeof icon.src === 'string')
+        .map((icon) => Object.assign({}, icon, {
+          src: new URL(icon.src, sourceUrl).href
+        }));
+    }
+
+    if (manifest.icons.length === 0) {
+      const foreground = contrastText(background);
+      const label = Array.from(name.trim())[0] || 'P';
+      manifest.icons = await buildIcons(background, foreground, label);
+    }
+
+    return manifest;
+  };
+
+  const findForeignManifest = () => {
     const links = document.querySelectorAll('link[rel]');
     for (const link of links) {
       if (ownLinks.has(link)) continue;
-      if (link.relList && link.relList.contains('manifest')) return true;
+      if (link.relList && link.relList.contains('manifest')) return link;
     }
-    return false;
+    return null;
   };
+
+  const hasForeignManifest = () => findForeignManifest() !== null;
 
   const removeOwnManifest = () => {
     if (manifestObserver) {
       manifestObserver.disconnect();
       manifestObserver = null;
+    }
+    if (overrideObserver) {
+      overrideObserver.disconnect();
+      overrideObserver = null;
     }
     if (ownLink) {
       ownLink.remove();
@@ -454,26 +525,7 @@
     }
   };
 
-  const injectManifest = async () => {
-    if (ownLink && ownLink.isConnected) return true;
-    if (hasForeignManifest()) {
-      log('skip: foreign manifest exists');
-      return false;
-    }
-
-    let manifest;
-    try {
-      manifest = await buildManifest();
-    } catch (error) {
-      warn('failed to build manifest', error);
-      return false;
-    }
-
-    if (!manifest.icons || manifest.icons.length === 0) {
-      warn('skip: no icons generated');
-      return false;
-    }
-
+  const insertManifest = (manifest, before, replaceLink) => {
     try {
       manifestUrl = URL.createObjectURL(new Blob(
         [JSON.stringify(manifest)],
@@ -482,6 +534,16 @@
     } catch (error) {
       warn('failed to create manifest blob', error);
       return false;
+    }
+
+    if (replaceLink) {
+      replaceLink.href = manifestUrl;
+      replaceLink.type = 'application/manifest+json';
+      replaceLink.dataset.forcePwa = OWN_MARK;
+      ownLink = replaceLink;
+      ownLinks.add(replaceLink);
+      log('manifest replaced', manifest);
+      return true;
     }
 
     const link = document.createElement('link');
@@ -497,11 +559,58 @@
       return false;
     }
 
-    target.appendChild(link);
+    if (before && before.parentNode) {
+      before.parentNode.insertBefore(link, before);
+    } else {
+      target.appendChild(link);
+    }
+
     ownLink = link;
     ownLinks.add(link);
     log('manifest injected', manifest);
     return true;
+  };
+
+  const injectManifest = async () => {
+    if (ownLink && ownLink.isConnected) return true;
+
+    const foreignLink = findForeignManifest();
+    if (foreignLink) {
+      if (!getSetting('overrideDisplay', false)) {
+        log('skip: foreign manifest exists');
+        return false;
+      }
+      let overridden;
+      try {
+        overridden = await buildOverriddenManifest(foreignLink);
+      } catch (error) {
+        warn('failed to override manifest', error);
+        return false;
+      }
+      if (!overridden || !overridden.icons ||
+          overridden.icons.length === 0) {
+        warn('skip: overridden manifest has no icons');
+        return false;
+      }
+      // 既存 link の href を差し替えると、Chrome は変更を検出して
+      // 新しい manifest を再評価する。
+      return insertManifest(overridden, null, foreignLink);
+    }
+
+    let manifest;
+    try {
+      manifest = await buildManifest();
+    } catch (error) {
+      warn('failed to build manifest', error);
+      return false;
+    }
+
+    if (!manifest.icons || manifest.icons.length === 0) {
+      warn('skip: no icons generated');
+      return false;
+    }
+
+    return insertManifest(manifest, null);
   };
 
   const watchForeignManifest = () => {
@@ -523,6 +632,44 @@
       }
     });
     observer.observe(target, { childList: true });
+    return observer;
+  };
+
+  const handleForeignLink = async (link) => {
+    const sourceUrl = link.href;
+    // Chrome が既存 manifest を取得する前に無効化する。
+    link.href = 'about:blank';
+    let overridden;
+    try {
+      overridden = await buildOverriddenManifest({ href: sourceUrl });
+    } catch (error) {
+      warn('failed to override manifest', error);
+      return;
+    }
+    if (!overridden || !overridden.icons ||
+        overridden.icons.length === 0) {
+      warn('skip: overridden manifest has no icons');
+      return;
+    }
+    insertManifest(overridden, null, link);
+  };
+
+  const interceptForeignManifest = () => {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          if (node.tagName !== 'LINK') continue;
+          if (ownLinks.has(node)) continue;
+          if (!node.relList || !node.relList.contains('manifest')) {
+            continue;
+          }
+          log('intercepting foreign manifest', node.href);
+          handleForeignLink(node);
+        }
+      }
+    });
+    observer.observe(document, { childList: true, subtree: true });
     return observer;
   };
 
@@ -695,7 +842,9 @@
       injectManifest()
         .then((injected) => {
           if (!injected) return;
-          manifestObserver = watchForeignManifest();
+          if (!getSetting('overrideDisplay', false)) {
+            manifestObserver = watchForeignManifest();
+          }
         })
         .catch((error) => warn('manifest refresh failed', error));
     }, 500);
@@ -743,11 +892,17 @@
     injectManifest()
       .then((injected) => {
         if (!injected) return;
-        manifestObserver = watchForeignManifest();
+        if (!getSetting('overrideDisplay', false)) {
+          manifestObserver = watchForeignManifest();
+        }
         watchCsp();
       })
       .catch((error) => warn('manifest injection failed', error));
   };
+
+  if (getSetting('overrideDisplay', false)) {
+    overrideObserver = interceptForeignManifest();
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init, { once: true });
@@ -776,6 +931,15 @@
         scheduleRefresh();
       }
       window.alert('manifest注入: ' + (next ? 'ON' : 'OFF'));
+    });
+
+    GM_registerMenuCommand('PWA: 既存manifestのdisplay上書き切替', () => {
+      const next = !getSetting('overrideDisplay', false);
+      setSetting('overrideDisplay', next);
+      window.alert(
+        '既存manifestのdisplay上書き: ' + (next ? 'ON' : 'OFF') +
+        '\nページを再読み込みしてください。'
+      );
     });
 
     GM_registerMenuCommand('PWA: start_urlのクエリ保持切替', () => {
