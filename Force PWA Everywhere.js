@@ -231,7 +231,7 @@
     }
   };
 
-  const buildIcons = (background, foreground, label) => {
+  const buildGeneratedIcons = (background, foreground, label) => {
     const icons = [];
     const sizes = [192, 512];
     for (const size of sizes) {
@@ -259,7 +259,144 @@
     return icons;
   };
 
-  const buildManifest = () => {
+  const parseSizes = (value) => {
+    if (!value) return 0;
+    let max = 0;
+    for (const part of value.split(/\s+/)) {
+      if (part === 'any') continue;
+      const match = part.match(/^(\d+)x(\d+)$/i);
+      if (!match) continue;
+      const width = parseInt(match[1], 10);
+      const height = parseInt(match[2], 10);
+      max = Math.max(max, Math.min(width, height));
+    }
+    return max;
+  };
+
+  const findIconCandidates = () => {
+    const candidates = [];
+    for (const link of document.querySelectorAll('link[rel][href]')) {
+      const rels = link.relList;
+      if (!rels) continue;
+      let score = 0;
+      if (
+        rels.contains('apple-touch-icon') ||
+        rels.contains('apple-touch-icon-precomposed')
+      ) {
+        score = 1000;
+      } else if (rels.contains('icon')) {
+        score = 100;
+      } else {
+        continue;
+      }
+      score += parseSizes(link.getAttribute('sizes'));
+      candidates.push({ href: link.href, score });
+    }
+    const tile = metaContent('meta[name="msapplication-TileImage"]');
+    if (tile) {
+      candidates.push({
+        href: new URL(tile, location.href).href,
+        score: 500
+      });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates;
+  };
+
+  const loadImage = (url) => new Promise((resolve) => {
+    const image = new Image();
+    const absolute = new URL(url, location.href);
+    if (absolute.origin !== location.origin) {
+      image.crossOrigin = 'anonymous';
+    }
+    const timer = window.setTimeout(() => {
+      image.src = '';
+      resolve(null);
+    }, 1500);
+    image.onload = () => {
+      window.clearTimeout(timer);
+      resolve(image);
+    };
+    image.onerror = () => {
+      window.clearTimeout(timer);
+      resolve(null);
+    };
+    image.src = absolute.href;
+  });
+
+  const findIconImage = async () => {
+    for (const candidate of findIconCandidates()) {
+      const image = await loadImage(candidate.href);
+      if (image && image.width > 0 && image.height > 0) {
+        log('using page icon', candidate.href);
+        return image;
+      }
+    }
+    return null;
+  };
+
+  const drawImageIcon = (image, size, background, maskable) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext('2d');
+    if (!context) return '';
+    if (background) {
+      context.fillStyle = background;
+      context.fillRect(0, 0, size, size);
+    }
+    const safeRatio = maskable ? 0.8 : 0.9;
+    const max = size * safeRatio;
+    const scale = Math.min(max / image.width, max / image.height);
+    const width = image.width * scale;
+    const height = image.height * scale;
+    context.drawImage(
+      image,
+      (size - width) / 2,
+      (size - height) / 2,
+      width,
+      height
+    );
+    try {
+      return canvas.toDataURL('image/png');
+    } catch (_) {
+      return '';
+    }
+  };
+
+  const buildIcons = async (background, foreground, label) => {
+    const image = await findIconImage();
+    if (image) {
+      const icons = [];
+      const sizes = [192, 512];
+      for (const size of sizes) {
+        const any = drawImageIcon(image, size, null, false);
+        if (any) {
+          icons.push({
+            src: any,
+            sizes: size + 'x' + size,
+            type: 'image/png',
+            purpose: 'any'
+          });
+        }
+      }
+      for (const size of sizes) {
+        const maskable = drawImageIcon(image, size, background, true);
+        if (maskable) {
+          icons.push({
+            src: maskable,
+            sizes: size + 'x' + size,
+            type: 'image/png',
+            purpose: 'maskable'
+          });
+        }
+      }
+      if (icons.length > 0) return icons;
+    }
+    return buildGeneratedIcons(background, foreground, label);
+  };
+
+  const buildManifest = async () => {
     const startUrl = buildStartUrl();
     const name = buildName();
     const background = pageBackground();
@@ -275,7 +412,7 @@
       background_color: background,
       theme_color: background,
       prefer_related_applications: false,
-      icons: buildIcons(background, foreground, label)
+      icons: await buildIcons(background, foreground, label)
     };
     const description = buildDescription();
     if (description) manifest.description = description;
@@ -315,7 +452,7 @@
     }
   };
 
-  const injectManifest = () => {
+  const injectManifest = async () => {
     if (ownLink && ownLink.isConnected) return true;
     if (hasForeignManifest()) {
       log('skip: foreign manifest exists');
@@ -324,7 +461,7 @@
 
     let manifest;
     try {
-      manifest = buildManifest();
+      manifest = await buildManifest();
     } catch (error) {
       warn('failed to build manifest', error);
       return false;
@@ -553,8 +690,12 @@
       if (isStandalone()) return;
       if (!getSetting('injectManifest', true)) return;
       removeOwnManifest();
-      if (!injectManifest()) return;
-      manifestObserver = watchForeignManifest();
+      injectManifest()
+        .then((injected) => {
+          if (!injected) return;
+          manifestObserver = watchForeignManifest();
+        })
+        .catch((error) => warn('manifest refresh failed', error));
     }, 500);
   };
 
@@ -597,9 +738,13 @@
       log('skip: manifest injection disabled');
       return;
     }
-    if (!injectManifest()) return;
-    manifestObserver = watchForeignManifest();
-    watchCsp();
+    injectManifest()
+      .then((injected) => {
+        if (!injected) return;
+        manifestObserver = watchForeignManifest();
+        watchCsp();
+      })
+      .catch((error) => warn('manifest injection failed', error));
   };
 
   if (document.readyState === 'loading') {
