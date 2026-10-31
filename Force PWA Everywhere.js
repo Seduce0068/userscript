@@ -450,6 +450,13 @@
     const raw = await fetchManifestJson(sourceUrl);
     if (!raw || typeof raw !== 'object') return null;
 
+    const currentDisplay =
+      typeof raw.display === 'string' ? raw.display : 'browser';
+    if (currentDisplay !== 'browser') {
+      log('skip: existing manifest is already installable');
+      return null;
+    }
+
     const startUrl = new URL(
       typeof raw.start_url === 'string' ? raw.start_url : '/',
       sourceUrl
@@ -576,7 +583,7 @@
 
     const foreignLink = findForeignManifest();
     if (foreignLink) {
-      if (!getSetting('overrideDisplay', false)) {
+      if (!getSetting('overrideDisplay', true)) {
         log('skip: foreign manifest exists');
         return false;
       }
@@ -587,8 +594,11 @@
         warn('failed to override manifest', error);
         return false;
       }
-      if (!overridden || !overridden.icons ||
-          overridden.icons.length === 0) {
+      if (!overridden) {
+        log('skip: existing manifest is already installable');
+        return false;
+      }
+      if (!overridden.icons || overridden.icons.length === 0) {
         warn('skip: overridden manifest has no icons');
         return false;
       }
@@ -646,8 +656,12 @@
       warn('failed to override manifest', error);
       return;
     }
-    if (!overridden || !overridden.icons ||
-        overridden.icons.length === 0) {
+    if (!overridden) {
+      link.href = sourceUrl;
+      return;
+    }
+    if (!overridden.icons || overridden.icons.length === 0) {
+      link.href = sourceUrl;
       warn('skip: overridden manifest has no icons');
       return;
     }
@@ -842,7 +856,7 @@
       injectManifest()
         .then((injected) => {
           if (!injected) return;
-          if (!getSetting('overrideDisplay', false)) {
+          if (!getSetting('overrideDisplay', true)) {
             manifestObserver = watchForeignManifest();
           }
         })
@@ -892,7 +906,7 @@
     injectManifest()
       .then((injected) => {
         if (!injected) return;
-        if (!getSetting('overrideDisplay', false)) {
+        if (!getSetting('overrideDisplay', true)) {
           manifestObserver = watchForeignManifest();
         }
         watchCsp();
@@ -900,7 +914,7 @@
       .catch((error) => warn('manifest injection failed', error));
   };
 
-  if (getSetting('overrideDisplay', false)) {
+  if (getSetting('overrideDisplay', true)) {
     overrideObserver = interceptForeignManifest();
   }
 
@@ -934,7 +948,7 @@
     });
 
     GM_registerMenuCommand('PWA: 既存manifestのdisplay上書き切替', () => {
-      const next = !getSetting('overrideDisplay', false);
+      const next = !getSetting('overrideDisplay', true);
       setSetting('overrideDisplay', next);
       window.alert(
         '既存manifestのdisplay上書き: ' + (next ? 'ON' : 'OFF') +
@@ -968,6 +982,8 @@
     GM_registerMenuCommand('PWA: 設定をリセット', () => {
       setSetting('showInstallButton', true);
       setSetting('injectManifest', true);
+      setSetting('overrideDisplay', true);
+      setSetting('keepQuery', false);
       setSetting('debug', false);
       debug = false;
       window.alert('設定をリセットしました。ページを再読み込みしてください。');
