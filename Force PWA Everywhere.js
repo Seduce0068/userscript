@@ -457,20 +457,30 @@
       return null;
     }
 
-    const startUrl = new URL(
+    const existingStartUrl = new URL(
       typeof raw.start_url === 'string' ? raw.start_url : '/',
       sourceUrl
     ).href;
+    const scope = raw.scope
+      ? new URL(raw.scope, sourceUrl).href
+      : new URL('.', existingStartUrl).href;
+    const currentUrl = buildStartUrl();
+    // 操作したページを起動ページにする。scope 外なら既存の start_url を使う。
+    const startUrl = currentUrl.startsWith(scope)
+      ? currentUrl
+      : existingStartUrl;
+    // id は固定しないと、ページごとに別 PWA として扱われる。
+    const id = raw.id
+      ? new URL(raw.id, sourceUrl).href
+      : existingStartUrl;
     const name = raw.name || buildName();
     const background = raw.background_color || pageBackground();
     const manifest = Object.assign({}, raw, {
-      id: raw.id ? new URL(raw.id, sourceUrl).href : startUrl,
+      id,
       name,
       short_name: raw.short_name || buildShortName(name),
       start_url: startUrl,
-      scope: raw.scope
-        ? new URL(raw.scope, sourceUrl).href
-        : new URL('.', startUrl).href,
+      scope,
       display: 'standalone',
       prefer_related_applications: false,
       theme_color: raw.theme_color || pageBackground(),
