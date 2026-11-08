@@ -2,6 +2,8 @@
 // @name         Open Filter
 // @namespace    open-filter
 // @version      3.0.0
+// @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
+// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
 // @author       opencode
 // @match        *://*/*

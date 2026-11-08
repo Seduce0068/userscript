@@ -2,6 +2,8 @@
 // @name         C
 // @namespace    https://example.com/
 // @version      1.5.1
+// @updateURL    https://github.com/onoderakeita/userscript/raw/master/Android%20DevTools%20%26%20Hardened%20Log%20Export.js
+// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/Android%20DevTools%20%26%20Hardened%20Log%20Export.js
 // @description  Hardened log export and diagnostic report.
 // @match        *://*/*
 // @noframes
