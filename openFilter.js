@@ -432,7 +432,7 @@
         }
     }
 
-    function restoreLatestBackup() {
+    async function restoreLatestBackup() {
         const backup = readLatestBackup();
         if (!backup) {
             alert('Open Filter: 復元できるバックアップがありません。');
@@ -445,7 +445,7 @@
         }
         const when = formatDateTime(backup.at);
         const reason = backup.reason ? '（' + backup.reason + '）' : '';
-        if (!confirm('バックアップ ' + when + reason + ' から設定を復元しますか？\n現在の設定は上書きされます。')) return;
+        if (!(await confirmAction('バックアップ ' + when + reason + ' から設定を復元しますか？\n現在の設定は上書きされます。', { danger: true, okLabel: '復元' }))) return;
         if (!createBackup('復元前')) {
             alert('Open Filter: 現在の設定のバックアップに失敗したため、復元を中止しました。');
             return;
@@ -799,7 +799,7 @@
 
         if (state.sync.dirty && !force) {
             if (silent) return { skipped: true, reason: 'dirty' };
-            if (!confirm('ローカルに未同期の変更があります。リモートの内容で上書きしますか？')) {
+            if (!(await confirmAction('ローカルに未同期の変更があります。リモートの内容で上書きしますか？', { danger: true, okLabel: '上書き' }))) {
                 return { canceled: true };
             }
         }
@@ -854,7 +854,7 @@
             if ((remoteSites === 0 || normalizedRules === 0) && (localSites > 0 || localRules > 0)) {
                 // 空のリモートデータでローカル設定を静かに消さない
                 if (silent) return { skipped: true, reason: 'empty-remote' };
-                if (!confirm('リモートの設定が空です。ローカルの設定を空にしますか？')) {
+                if (!(await confirmAction('リモートの設定が空です。ローカルの設定を空にしますか？', { danger: true, okLabel: '空にする' }))) {
                     return { canceled: true };
                 }
             }
@@ -1049,7 +1049,7 @@
 
     async function onManualDownload() {
         if (syncBusy) return;
-        if (state.sync.dirty && !confirm('ローカルに未同期の変更があります。リモートの内容で上書きしますか？')) {
+        if (state.sync.dirty && !(await confirmAction('ローカルに未同期の変更があります。リモートの内容で上書きしますか？', { danger: true, okLabel: '上書き' }))) {
             return;
         }
         setSyncStatus('ダウンロード中...');
@@ -1607,7 +1607,7 @@
     // ------------------------------------------------------------------
 
     const UI_CSS = `
-        :host { all: initial; }
+        :host { all: initial; color-scheme: light dark; }
         * { box-sizing: border-box; }
         [hidden] { display: none !important; }
         #uf-trigger {
@@ -1637,6 +1637,22 @@
             display: flex; align-items: center; justify-content: center;
             padding: 12px; pointer-events: auto;
         }
+        #uf-confirm {
+            position: fixed; inset: 0; z-index: 2147483647;
+            background: rgba(0,0,0,.38);
+            display: flex; align-items: center; justify-content: center;
+            padding: 12px; pointer-events: auto;
+        }
+        .uf-confirm-panel {
+            width: min(420px, 100%);
+            display: flex; flex-direction: column; gap: 14px;
+            background: #fff; color: #1c1c1e;
+            border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.3);
+            padding: 16px;
+            font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        .uf-confirm-panel p { margin: 0; white-space: pre-wrap; }
+        .uf-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
         .uf-panel {
             width: min(600px, 100%); max-height: min(88vh, 900px);
             display: flex; flex-direction: column;
@@ -1767,7 +1783,7 @@
         }
         .uf-icon-btn:hover { background: #f2f2f7; }
         @media (prefers-color-scheme: dark) {
-            .uf-panel { background: #1c1c1e; color: #f2f2f7; }
+            .uf-panel, .uf-confirm-panel { background: #1c1c1e; color: #f2f2f7; }
             .uf-header, .uf-tabs, .uf-footer, .uf-rule, .uf-card, .uf-fieldset { border-color: #38383a; }
             .uf-sitebar { background: #2c2c2e; border-color: #38383a; color: #aeaeb2; }
             .uf-footer { background: #1c1c1e; }
@@ -1800,7 +1816,7 @@
             <span id="uf-badge" hidden></span>
         </div>
         <div id="uf-overlay" hidden>
-            <div class="uf-panel" role="dialog" aria-modal="true" aria-label="Open Filter 設定">
+            <div class="uf-panel" role="dialog" aria-modal="true" aria-label="Open Filter 設定" tabindex="-1">
                 <header class="uf-header">
                     <div class="uf-brand">
                         <span class="uf-logo" aria-hidden="true">⚙</span>
@@ -1814,13 +1830,13 @@
                 </header>
                 <div class="uf-sitebar" id="uf-sitebar"></div>
                 <nav class="uf-tabs" role="tablist">
-                    <button type="button" class="uf-tab is-active" data-tab="rules" role="tab">ルール</button>
-                    <button type="button" class="uf-tab" data-tab="site" role="tab">サイト</button>
-                    <button type="button" class="uf-tab" data-tab="data" role="tab">データ</button>
-                    <button type="button" class="uf-tab" data-tab="help" role="tab">ヘルプ</button>
+                    <button type="button" class="uf-tab is-active" data-tab="rules" role="tab" aria-selected="true" aria-controls="uf-tab-rules">ルール</button>
+                    <button type="button" class="uf-tab" data-tab="site" role="tab" aria-selected="false" aria-controls="uf-tab-site">サイト</button>
+                    <button type="button" class="uf-tab" data-tab="data" role="tab" aria-selected="false" aria-controls="uf-tab-data">データ</button>
+                    <button type="button" class="uf-tab" data-tab="help" role="tab" aria-selected="false" aria-controls="uf-tab-help">ヘルプ</button>
                 </nav>
                 <main class="uf-main">
-                    <section id="uf-tab-rules" class="uf-tabpanel">
+                    <section id="uf-tab-rules" class="uf-tabpanel" role="tabpanel">
                         <div class="uf-toolbar">
                             <span class="uf-muted" id="uf-rule-summary"></span>
                             <button type="button" id="uf-add" class="uf-btn uf-btn-primary">＋ 新規ルール</button>
@@ -1832,7 +1848,7 @@
                         </div>
                         <div id="uf-form-wrap" hidden></div>
                     </section>
-                    <section id="uf-tab-site" class="uf-tabpanel" hidden>
+                    <section id="uf-tab-site" class="uf-tabpanel" role="tabpanel" hidden>
                         <div class="uf-card">
                             <h3>このサイト</h3>
                             <p class="uf-muted" id="uf-site-host"></p>
@@ -1860,7 +1876,7 @@
                             <button type="button" id="uf-site-delete" class="uf-btn uf-btn-danger">このサイトの設定を削除</button>
                         </div>
                     </section>
-                    <section id="uf-tab-data" class="uf-tabpanel" hidden>
+                    <section id="uf-tab-data" class="uf-tabpanel" role="tabpanel" hidden>
                         <div class="uf-card">
                             <h3>クラウド同期</h3>
                             <label class="uf-check"><input type="checkbox" id="uf-sync-enabled"> 同期を有効にする</label>
@@ -1895,7 +1911,7 @@
                                 <button type="button" id="uf-sync-upload" class="uf-btn">アップロード</button>
                                 <button type="button" id="uf-sync-download" class="uf-btn">ダウンロード</button>
                             </div>
-                            <p class="uf-muted" id="uf-sync-status"></p>
+                            <p class="uf-muted" id="uf-sync-status" role="status" aria-live="polite"></p>
                             <p class="uf-hint">トークンと共有キーはこの端末にのみ保存され、エクスポートには含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
                             <p class="uf-hint">秘密情報は信頼できるページで入力してください。ページ側のスクリプトによって入力が傍受される可能性があります。</p>
                         </div>
@@ -1919,7 +1935,7 @@
                             <button type="button" id="uf-reset" class="uf-btn uf-btn-danger">すべての設定を削除</button>
                         </div>
                     </section>
-                    <section id="uf-tab-help" class="uf-tabpanel" hidden>
+                    <section id="uf-tab-help" class="uf-tabpanel" role="tabpanel" hidden>
                         <div class="uf-card uf-help">
                             <h3>使い方</h3>
                             <ol>
@@ -1957,9 +1973,18 @@
                     </section>
                 </main>
                 <footer class="uf-footer">
-                    <span id="uf-stats"></span>
+                    <span id="uf-stats" aria-live="polite"></span>
                     <span class="uf-muted" id="uf-host"></span>
                 </footer>
+            </div>
+        </div>
+        <div id="uf-confirm" hidden>
+            <div class="uf-confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="uf-confirm-message">
+                <p id="uf-confirm-message"></p>
+                <div class="uf-confirm-actions">
+                    <button type="button" id="uf-confirm-cancel" class="uf-btn">キャンセル</button>
+                    <button type="button" id="uf-confirm-ok" class="uf-btn uf-btn-primary">OK</button>
+                </div>
             </div>
         </div>
     `;
@@ -2044,7 +2069,7 @@
                 <button type="button" data-css="height:0;overflow:hidden;margin:0;padding:0;">折りたたむ</button>
             </div>
             <p class="uf-hint" id="uf-css-hint" hidden>CSSは宣言のみ指定してください（例: <code>opacity:.3;</code>）。波括弧は使用できません。</p>
-            <div id="uf-form-error" class="uf-error" hidden></div>
+            <div id="uf-form-error" class="uf-error" role="alert" aria-live="polite" hidden></div>
             <div class="uf-actions">
                 <button type="button" id="uf-preview" class="uf-btn">一致を確認</button>
                 <button type="button" id="uf-save" class="uf-btn uf-btn-primary">保存</button>
@@ -2071,6 +2096,7 @@
         if (!IS_TOP_FRAME && !state.ui.showInFrames) return;
         uiHost = document.createElement('div');
         uiHost.id = HOST_ID;
+        uiHost.setAttribute('lang', 'ja');
         uiHost.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
         // トークンを扱うため、ページスクリプトから shadow root を参照できない closed にする
         uiRoot = uiHost.attachShadow({ mode: 'closed' });
@@ -2152,12 +2178,35 @@
         query('#uf-overlay').addEventListener('click', (event) => {
             if (event.target === query('#uf-overlay')) closePanel();
         });
+        query('#uf-confirm-ok').addEventListener('click', () => closeConfirm(true));
+        query('#uf-confirm-cancel').addEventListener('click', () => closeConfirm(false));
+        query('#uf-confirm').addEventListener('click', (event) => {
+            if (event.target === query('#uf-confirm')) closeConfirm(false);
+        });
         document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && !query('#uf-overlay').hidden) closePanel();
+            if (event.key !== 'Escape') return;
+            if (!query('#uf-confirm').hidden) {
+                event.preventDefault();
+                closeConfirm(false);
+                return;
+            }
+            if (!query('#uf-overlay').hidden) closePanel();
+        });
+        // ダイアログ内でTabフォーカスを循環させる
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Tab') return;
+            if (!query('#uf-confirm').hidden) {
+                trapTabKey(event, query('#uf-confirm').querySelector('.uf-confirm-panel'));
+                return;
+            }
+            if (!query('#uf-overlay').hidden) {
+                trapTabKey(event, query('#uf-overlay').querySelector('.uf-panel'));
+            }
         });
         // 歯車ボタンを非表示にしていても開けるよう、キーボードショートカットを用意する
         document.addEventListener('keydown', (event) => {
             if (event.repeat || pickerState) return;
+            if (!query('#uf-confirm').hidden) return;
             if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
             const isO = event.code === 'KeyO' || String(event.key || '').toLowerCase() === 'o';
             if (!isO) return;
@@ -2225,9 +2274,9 @@
             if (uiRoot) renderSiteTab();
         });
         query('#uf-here-only').addEventListener('change', renderRuleList);
-        query('#uf-site-delete').addEventListener('click', (event) => {
+        query('#uf-site-delete').addEventListener('click', async (event) => {
             if (!event.isTrusted) return;
-            if (!confirm(`このサイト（${location.host}）の設定を削除しますか？`)) return;
+            if (!(await confirmAction(`このサイト（${location.host}）の設定を削除しますか？`, { danger: true, okLabel: '削除' }))) return;
             deleteSite();
         });
 
@@ -2256,6 +2305,75 @@
         });
     }
 
+    let confirmResolver = null;
+    let confirmLastFocus = null;
+    let panelLastFocus = null;
+
+    function confirmAction(message, options = {}) {
+        if (!uiRoot) return Promise.resolve(window.confirm(message));
+        if (confirmResolver) return Promise.resolve(false);
+        const overlay = uiRoot.querySelector('#uf-confirm');
+        const text = uiRoot.querySelector('#uf-confirm-message');
+        const ok = uiRoot.querySelector('#uf-confirm-ok');
+        const cancel = uiRoot.querySelector('#uf-confirm-cancel');
+        if (!overlay || !text || !ok || !cancel) {
+            return Promise.resolve(window.confirm(message));
+        }
+        confirmLastFocus = uiRoot.activeElement || document.activeElement;
+        text.textContent = String(message || '');
+        ok.textContent = options.okLabel || 'OK';
+        ok.classList.toggle('uf-btn-danger', options.danger === true);
+        ok.classList.toggle('uf-btn-primary', options.danger !== true);
+        overlay.hidden = false;
+        try {
+            cancel.focus({ preventScroll: true });
+        } catch (error) {
+            cancel.focus();
+        }
+        return new Promise((resolve) => {
+            confirmResolver = resolve;
+        });
+    }
+
+    function closeConfirm(result) {
+        if (!confirmResolver) return;
+        const resolve = confirmResolver;
+        confirmResolver = null;
+        const overlay = uiRoot ? uiRoot.querySelector('#uf-confirm') : null;
+        if (overlay) overlay.hidden = true;
+        if (confirmLastFocus && typeof confirmLastFocus.focus === 'function') {
+            try {
+                confirmLastFocus.focus({ preventScroll: true });
+            } catch (error) {
+                // フォーカス復帰に失敗しても処理は継続する
+            }
+        }
+        confirmLastFocus = null;
+        resolve(result === true);
+    }
+
+    function getFocusable(container) {
+        if (!container) return [];
+        return Array.from(container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+            .filter((element) => !element.disabled && !element.hidden && element.getClientRects().length > 0);
+    }
+
+    function trapTabKey(event, container) {
+        const focusables = getFocusable(container);
+        if (!focusables.length) return;
+        const active = uiRoot && uiRoot.activeElement ? uiRoot.activeElement : null;
+        const index = focusables.indexOf(active);
+        if (event.shiftKey) {
+            if (index <= 0) {
+                event.preventDefault();
+                focusables[focusables.length - 1].focus();
+            }
+        } else if (index === -1 || index === focusables.length - 1) {
+            event.preventDefault();
+            focusables[0].focus();
+        }
+    }
+
     function openPanel() {
         if (!uiRoot) {
             try {
@@ -2270,9 +2388,21 @@
         ensureUiHost();
         const overlay = uiRoot.querySelector('#uf-overlay');
         if (!overlay) return;
+        const wasHidden = overlay.hidden;
         overlay.hidden = false;
         renderAll();
         switchTab('rules');
+        if (wasHidden) {
+            panelLastFocus = uiRoot.activeElement || document.activeElement;
+            const panel = uiRoot.querySelector('.uf-panel');
+            if (panel) {
+                try {
+                    panel.focus({ preventScroll: true });
+                } catch (error) {
+                    panel.focus();
+                }
+            }
+        }
     }
 
     function closePanel() {
@@ -2283,12 +2413,22 @@
         if (!uiRoot) return;
         const overlay = uiRoot.querySelector('#uf-overlay');
         if (overlay) overlay.hidden = true;
+        if (panelLastFocus && typeof panelLastFocus.focus === 'function') {
+            try {
+                panelLastFocus.focus({ preventScroll: true });
+            } catch (error) {
+                // フォーカス復帰に失敗しても処理は継続する
+            }
+        }
+        panelLastFocus = null;
     }
 
     function switchTab(name) {
         const query = (selector) => uiRoot.querySelector(selector);
         Array.from(uiRoot.querySelectorAll('.uf-tab')).forEach((button) => {
-            button.classList.toggle('is-active', button.dataset.tab === name);
+            const selected = button.dataset.tab === name;
+            button.classList.toggle('is-active', selected);
+            button.setAttribute('aria-selected', selected ? 'true' : 'false');
         });
         for (const tab of ['rules', 'site', 'data', 'help']) {
             query('#uf-tab-' + tab).hidden = tab !== name;
@@ -2405,8 +2545,8 @@
         remove.type = 'button';
         remove.className = 'uf-btn uf-btn-danger';
         remove.textContent = '削除';
-        remove.addEventListener('click', () => {
-            if (!confirm(`ルール「${rule.name || rule.selector}」を削除しますか？`)) return;
+        remove.addEventListener('click', async () => {
+            if (!(await confirmAction(`ルール「${rule.name || rule.selector}」を削除しますか？`, { danger: true, okLabel: '削除' }))) return;
             removeRule(rule.id);
         });
         actions.appendChild(remove);
@@ -2652,9 +2792,9 @@
         }
     }
 
-    function onDeleteRule() {
+    async function onDeleteRule() {
         if (!editingId) return;
-        if (!confirm('このルールを削除しますか？')) return;
+        if (!(await confirmAction('このルールを削除しますか？', { danger: true, okLabel: '削除' }))) return;
         const id = editingId;
         hideForm();
         removeRule(id);
@@ -3082,16 +3222,18 @@
             const quarantineNote = counts.quarantined
                 ? `\n不正なルール ${counts.quarantined} 件は復旧待ちとして保持します。`
                 : '';
-            if (!confirm(`現在のすべての設定を、${counts.sites} サイト / ${counts.rules} ルールで置き換えますか？\n現在の設定は自動バックアップします。${quarantineNote}`)) return;
-            if (!createBackup('全体インポート')) {
-                alert('バックアップに失敗したため、インポートを中止しました。');
-                return;
-            }
-            if (!runStateChange(() => { state = imported; })) {
-                alert('インポートした設定の保存に失敗しました。');
-                return;
-            }
-            hideForm();
+            confirmAction(`現在のすべての設定を、${counts.sites} サイト / ${counts.rules} ルールで置き換えますか？\n現在の設定は自動バックアップします。${quarantineNote}`, { danger: true, okLabel: '置き換える' }).then((ok) => {
+                if (!ok) return;
+                if (!createBackup('全体インポート')) {
+                    alert('バックアップに失敗したため、インポートを中止しました。');
+                    return;
+                }
+                if (!runStateChange(() => { state = imported; })) {
+                    alert('インポートした設定の保存に失敗しました。');
+                    return;
+                }
+                hideForm();
+            });
         });
     }
 
@@ -3116,22 +3258,24 @@
             const message = host && host !== location.host
                 ? `この設定は ${host} 用です。現在のサイト（${location.host}）の設定を上書きしてインポートしますか？\n現在の設定は自動バックアップします。`
                 : 'このサイトの設定を上書きしてインポートしますか？\n現在の設定は自動バックアップします。';
-            if (!confirm(message)) return;
-            if (!createBackup('サイトインポート')) {
-                alert('バックアップに失敗したため、インポートを中止しました。');
-                return;
-            }
-            const importedProfile = normalizeProfile(profile);
-            if (!runStateChange(() => { state.sites[location.host] = importedProfile; })) {
-                alert('インポートした設定の保存に失敗しました。');
-                return;
-            }
-            hideForm();
+            confirmAction(message, { danger: true, okLabel: '上書き' }).then((ok) => {
+                if (!ok) return;
+                if (!createBackup('サイトインポート')) {
+                    alert('バックアップに失敗したため、インポートを中止しました。');
+                    return;
+                }
+                const importedProfile = normalizeProfile(profile);
+                if (!runStateChange(() => { state.sites[location.host] = importedProfile; })) {
+                    alert('インポートした設定の保存に失敗しました。');
+                    return;
+                }
+                hideForm();
+            });
         });
     }
 
-    function resetAll() {
-        if (!confirm('すべてのサイトの設定を削除します。よろしいですか？\n（Gist/GAS のトークン・共有キーも削除されます）')) return;
+    async function resetAll() {
+        if (!(await confirmAction('すべてのサイトの設定を削除します。よろしいですか？\n（Gist/GAS のトークン・共有キーも削除されます）', { danger: true, okLabel: '削除' }))) return;
         if (!createBackup('全設定削除')) {
             alert('バックアップに失敗したため、削除を中止しました。');
             return;
