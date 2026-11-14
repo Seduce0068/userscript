@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.2.0
+// @version      3.3.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.2.0';
+    const VERSION = '3.3.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -516,6 +516,22 @@
         }
     }
 
+    function isDestructiveRule(rule) {
+        const type = rule && rule.action ? rule.action.type : '';
+        return type === 'remove' || type === 'css';
+    }
+
+    function countDestructiveRules(sites) {
+        let count = 0;
+        for (const profile of Object.values(sites || {})) {
+            if (!profile || !Array.isArray(profile.rules)) continue;
+            for (const rule of profile.rules) {
+                if (isDestructiveRule(rule)) count++;
+            }
+        }
+        return count;
+    }
+
     function validateRemoteState(data) {
         if (!data || typeof data !== 'object' || Array.isArray(data)) {
             return '同期データの形式が不正です。';
@@ -859,6 +875,17 @@
                 }
             }
 
+            const destructiveCount = countDestructiveRules(normalized.sites);
+            if (destructiveCount > 0) {
+                if (silent) return { skipped: true, reason: 'destructive', destructiveCount };
+                if (!(await confirmAction(
+                    'リモート設定に削除/CSS変更ルールが ' + destructiveCount + ' 件含まれています。適用しますか？\n適用前に現在の設定を自動バックアップします。',
+                    { danger: true, okLabel: '適用' }
+                ))) {
+                    return { canceled: true };
+                }
+            }
+
             normalized.sync = {
                 enabled: state.sync.enabled,
                 provider: provider,
@@ -928,7 +955,11 @@
         if (!syncBusy) {
             try {
                 const result = await syncDownload({ silent: true });
-                if (result && result.applied) setSyncStatus('リモートの変更を適用しました');
+                if (result && result.applied) {
+                    setSyncStatus('リモートの変更を適用しました');
+                } else if (result && result.skipped && result.reason === 'destructive') {
+                    setSyncStatus('削除/CSS変更ルールを含むリモート設定のため自動適用をスキップしました。', true);
+                }
             } catch (error) {
                 setSyncStatus('定期同期に失敗: ' + error.message, true);
             }
@@ -965,6 +996,8 @@
                         setSyncStatus('起動時にリモート設定を適用しました');
                     } else if (result && result.skipped && result.reason === 'empty-remote') {
                         setSyncStatus('空のリモート設定をスキップしました');
+                    } else if (result && result.skipped && result.reason === 'destructive') {
+                        setSyncStatus('削除/CSS変更ルールを含むリモート設定のため自動適用をスキップしました。手動でダウンロードしてください。', true);
                     } else if (result && result.skipped && result.reason !== 'up-to-date') {
                         setSyncStatus('自動ダウンロードをスキップしました', true);
                     }
@@ -1332,6 +1365,7 @@
     let observer = null;
     const MAX_PENDING = 2000;
     const pendingNodes = new Set();
+    let needsFullApply = false;
     let flushScheduled = false;
     let flushRaf = 0;
 
@@ -1506,6 +1540,7 @@
         for (const node of nodes) {
             if (pendingNodes.size >= MAX_PENDING) {
                 stats.capped = true;
+                needsFullApply = true;
                 break;
             }
             pendingNodes.add(node);
@@ -1538,12 +1573,21 @@
                     descendants = [];
                 }
                 const limit = Math.min(descendants.length, MAX_TARGETS);
-                if (descendants.length > MAX_TARGETS) stats.capped = true;
+                if (descendants.length > MAX_TARGETS) {
+                    stats.capped = true;
+                    needsFullApply = true;
+                }
                 for (let index = 0; index < limit; index++) {
                     applyToElement(descendants[index], rules);
                 }
             }
             pendingNodes.clear();
+            if (needsFullApply) {
+                // 上限で取りこぼした可能性があるため、全体を再適用して整合させる
+                needsFullApply = false;
+                applyAll();
+                return;
+            }
             updateUiStats();
         };
 
@@ -1912,7 +1956,7 @@
                                 <button type="button" id="uf-sync-download" class="uf-btn">ダウンロード</button>
                             </div>
                             <p class="uf-muted" id="uf-sync-status" role="status" aria-live="polite"></p>
-                            <p class="uf-hint">トークンと共有キーはこの端末にのみ保存され、エクスポートには含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
+                            <p class="uf-hint">トークン・共有キー・Gist ID・GAS URL はエクスポートに含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
                             <p class="uf-hint">秘密情報は信頼できるページで入力してください。ページ側のスクリプトによって入力が傍受される可能性があります。</p>
                         </div>
                         <div class="uf-card">
@@ -1960,7 +2004,8 @@
                             <ul>
                                 <li>「データ」タブで GitHub の gist スコープのトークンを設定します。</li>
                                 <li>「アップロード」で Gist を作成または更新し、「ダウンロード」で取得します。</li>
-                                <li>トークンは端末内にのみ保存され、Gist やエクスポートには含まれません。</li>
+                                <li>トークン・共有キー・Gist ID・GAS URL は端末内にのみ保存され、エクスポートには含まれません。</li>
+                                <li>削除/CSS変更ルールを含むリモート設定は、自動ダウンロードでは適用しません。手動ダウンロードで確認して適用してください。</li>
                                 <li>Gist は secret ですが、URL を知っている人は閲覧できます。</li>
                             </ul>
                             <h3>困ったとき</h3>
@@ -3131,8 +3176,18 @@
         return (bytes / 1024 / 1024).toFixed(2) + ' MB';
     }
 
+    function buildExportState() {
+        const exported = JSON.parse(JSON.stringify(state));
+        if (exported.sync) {
+            // Gist ID / GAS URL は秘密に近い識別子のため共有用エクスポートには含めない
+            exported.sync.gistId = '';
+            exported.sync.gasUrl = '';
+        }
+        return exported;
+    }
+
     function exportAll() {
-        downloadJson(state, `open-filter-all-${dateStamp()}.json`);
+        downloadJson(buildExportState(), `open-filter-all-${dateStamp()}.json`);
     }
 
     function exportSite() {
