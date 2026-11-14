@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.1.0
+// @version      3.2.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,10 +23,13 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.1.0';
+    const VERSION = '3.2.0';
+    const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
     const SYNC_GAS_KEY = 'open_filter_gas_key';
+    const BACKUP_LATEST_KEY = 'open_filter_backup_latest';
+    const BACKUP_PREVIOUS_KEY = 'open_filter_backup_previous';
     const HOST_ID = 'open-filter-root';
     const PICKER_ID = 'open-filter-picker';
     const HIDDEN_CLASS = 'open-filter-hidden';
@@ -35,7 +38,21 @@
     const MAX_TEXT = 4000;
     const MAX_PATTERN = 500;
     const MAX_PATTERNS = 50;
+    const MAX_SITES = 300;
+    const MAX_RULES_PER_SITE = 500;
+    const MAX_QUARANTINE = 100;
+    const MAX_QUARANTINE_BYTES = 20000;
     const IS_TOP_FRAME = window.top === window.self;
+    const RUNTIME_VERSION = (() => {
+        try {
+            if (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) {
+                return String(GM_info.script.version);
+            }
+        } catch (error) {
+            // GM_info 非対応環境では定数へフォールバック
+        }
+        return VERSION;
+    })();
 
     // ------------------------------------------------------------------
     // ストレージ (GM_* API / localStorage フォールバック)
@@ -52,6 +69,16 @@
                 return value == null ? fallback : value;
             } catch (error) {
                 return fallback;
+            }
+        },
+        read(key) {
+            try {
+                if (typeof GM_getValue === 'function') {
+                    return { ok: true, value: GM_getValue(key, null) };
+                }
+                return { ok: true, value: localStorage.getItem(key) };
+            } catch (error) {
+                return { ok: false, error };
             }
         },
         set(key, value) {
@@ -85,15 +112,18 @@
     // ------------------------------------------------------------------
 
     let loadedCorrupt = false;
+    let storageBlocked = false;
+    let storageBlockedReason = '';
+    let storageBlockedNotified = false;
     let state = loadState();
 
     function newRuleId() {
         return 'uf_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
     }
 
-    function normalizeState(raw) {
-        const out = {
-            version: 3,
+    function createDefaultState() {
+        return {
+            version: SCHEMA_VERSION,
             globalEnabled: true,
             sites: Object.create(null),
             ui: { showInFrames: false, hideTrigger: false },
@@ -108,7 +138,11 @@
                 lastSyncAt: ''
             }
         };
-        if (!raw || typeof raw !== 'object') return out;
+    }
+
+    function normalizeState(raw) {
+        const out = createDefaultState();
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
         if (raw.globalEnabled === false) out.globalEnabled = false;
         if (raw.ui && raw.ui.showInFrames === true) out.ui.showInFrames = true;
         if (raw.ui && raw.ui.hideTrigger === true) out.ui.hideTrigger = true;
@@ -123,26 +157,61 @@
             out.sync.lastSyncAt = String(raw.sync.lastSyncAt || '').slice(0, 40);
         }
         if (raw.sites && typeof raw.sites === 'object' && !Array.isArray(raw.sites)) {
+            let siteCount = 0;
             for (const [host, profile] of Object.entries(raw.sites)) {
+                if (siteCount >= MAX_SITES) break;
                 if (!host || !profile || typeof profile !== 'object') continue;
                 out.sites[host] = normalizeProfile(profile);
+                siteCount++;
             }
         }
         return out;
     }
 
     function normalizeProfile(profile) {
-        const out = { enabled: profile.enabled !== false, rules: [] };
+        const out = { enabled: profile.enabled !== false, rules: [], invalid: [] };
         if (!Array.isArray(profile.rules)) return out;
         const seen = new Set();
         for (const rawRule of profile.rules) {
+            if (out.rules.length >= MAX_RULES_PER_SITE) {
+                addQuarantined(out, rawRule, '上限超過');
+                continue;
+            }
             const rule = normalizeRule(rawRule);
-            if (!rule) continue;
+            if (!rule) {
+                addQuarantined(out, rawRule, '不正なルール');
+                continue;
+            }
             while (seen.has(rule.id)) rule.id = newRuleId();
             seen.add(rule.id);
             out.rules.push(rule);
         }
+        if (Array.isArray(profile.invalid)) {
+            for (const entry of profile.invalid) addQuarantined(out, entry, '復旧待ち');
+        }
         return out;
+    }
+
+    function addQuarantined(profile, rawRule, reason) {
+        if (!profile || !Array.isArray(profile.invalid)) return;
+        if (profile.invalid.length >= MAX_QUARANTINE) return;
+        if (!rawRule || typeof rawRule !== 'object' || Array.isArray(rawRule)) return;
+        let entry;
+        try {
+            const json = JSON.stringify(rawRule);
+            if (json.length > MAX_QUARANTINE_BYTES) {
+                entry = {
+                    id: String(rawRule.id || '').slice(0, 120),
+                    selector: String(rawRule.selector || '').slice(0, 200),
+                    reason: reason + '（サイズ超過のため要約）'
+                };
+            } else {
+                entry = Object.assign(Object.create(null), rawRule, { reason: String(rawRule.reason || reason) });
+            }
+        } catch (error) {
+            return;
+        }
+        profile.invalid.push(entry);
     }
 
     function normalizeRule(raw) {
@@ -200,7 +269,12 @@
     }
 
     function loadState() {
-        const raw = store.get(STORAGE_KEY, null);
+        const read = store.read(STORAGE_KEY);
+        if (!read.ok) {
+            blockStorage('設定の読み込みに失敗したため、');
+            return createDefaultState();
+        }
+        const raw = read.value;
         let parsed = null;
         if (raw) {
             try {
@@ -217,26 +291,53 @@
                 parsed = null;
             }
         }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            const version = Number(parsed.version);
+            if (Number.isFinite(version) && version > SCHEMA_VERSION) {
+                // 未知の新スキーマを既定値へ変換して保存するとデータを壊すため、書込みを停止する
+                blockStorage('このスクリプトより新しいバージョンの設定データを検出したため、');
+            }
+        }
         return normalizeState(parsed);
     }
 
-    function saveState(options = {}) {
-        const skipSync = options.skipSync === true;
-        if (!skipSync) {
-            state.sync.dirty = true;
-            scheduleSyncUpload();
+    function blockStorage(reason) {
+        storageBlocked = true;
+        if (reason) storageBlockedReason = reason;
+        console.warn('[Open Filter] ' + storageBlockedReason + '設定の保存を停止します。');
+    }
+
+    function notifyStorageBlocked() {
+        if (storageBlockedNotified) return;
+        storageBlockedNotified = true;
+        const message = 'Open Filter: ' + (storageBlockedReason || '設定データを保護するため、') +
+            '設定の保存を停止しています。ページを再読み込みしてから操作してください。';
+        try {
+            alert(message);
+        } catch (error) {
+            console.warn(message);
         }
+    }
+
+    function saveState(options = {}) {
+        if (storageBlocked) {
+            notifyStorageBlocked();
+            return false;
+        }
+        const skipSync = options.skipSync === true;
+        if (!skipSync) state.sync.dirty = true;
         try {
             if (!store.set(STORAGE_KEY, JSON.stringify(state))) {
                 notifySaveFailure();
                 return false;
             }
-            return true;
         } catch (error) {
             console.warn('[Open Filter] 設定の保存に失敗しました', error);
             notifySaveFailure();
             return false;
         }
+        if (!skipSync) scheduleSyncUpload();
+        return true;
     }
 
     function notifySaveFailure() {
@@ -245,6 +346,121 @@
         } catch (error) {
             console.warn('[Open Filter] 設定を保存できませんでした', error);
         }
+    }
+
+    function notifyCorruptOnce() {
+        try {
+            alert('Open Filter: 設定データが破損していたため退避し、初期状態で起動しました。');
+        } catch (error) {
+            console.warn('[Open Filter] 設定データが破損していました', error);
+        }
+    }
+
+    // 変更前スナップショットを取り、保存に失敗したらメモリ上の状態も元へ戻す
+    function snapshotState() {
+        try {
+            return JSON.stringify(state);
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function restoreStateSnapshot(snapshot) {
+        if (!snapshot) return false;
+        try {
+            state = normalizeState(JSON.parse(snapshot));
+            return true;
+        } catch (error) {
+            console.warn('[Open Filter] 変更前の状態へ戻せませんでした', error);
+            return false;
+        }
+    }
+
+    function refreshAfterStateChange(options) {
+        const opts = options || {};
+        if (opts.refreshCss !== false) refreshPageCss();
+        if (opts.apply !== false) applyAll();
+        if (opts.sync !== false) syncObserver();
+        if (opts.render !== false && uiRoot) renderAll();
+    }
+
+    function runStateChange(mutator, options = {}) {
+        const snapshot = snapshotState();
+        try {
+            mutator();
+        } catch (error) {
+            console.warn('[Open Filter] 設定の変更に失敗しました', error);
+            restoreStateSnapshot(snapshot);
+            refreshAfterStateChange({});
+            return false;
+        }
+        if (!saveState({ skipSync: options.skipSync === true })) {
+            restoreStateSnapshot(snapshot);
+            refreshAfterStateChange({});
+            return false;
+        }
+        refreshAfterStateChange(options);
+        return true;
+    }
+
+    // 破壊的操作の直前に直前状態を退避する（最新と1つ前の2世代を保持）
+    function createBackup(reason) {
+        try {
+            const previous = store.get(BACKUP_LATEST_KEY, '');
+            if (typeof previous === 'string' && previous) store.set(BACKUP_PREVIOUS_KEY, previous);
+            const payload = JSON.stringify({
+                at: new Date().toISOString(),
+                reason: String(reason || ''),
+                state
+            });
+            return store.set(BACKUP_LATEST_KEY, payload);
+        } catch (error) {
+            console.warn('[Open Filter] バックアップの作成に失敗しました', error);
+            return false;
+        }
+    }
+
+    function readLatestBackup() {
+        try {
+            const raw = store.get(BACKUP_LATEST_KEY, '');
+            if (typeof raw !== 'string' || !raw) return null;
+            const data = JSON.parse(raw);
+            if (!data || typeof data !== 'object' || !data.state || typeof data.state !== 'object') return null;
+            return data;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function restoreLatestBackup() {
+        const backup = readLatestBackup();
+        if (!backup) {
+            alert('Open Filter: 復元できるバックアップがありません。');
+            return;
+        }
+        const backupVersion = Number(backup.state.version);
+        if (Number.isFinite(backupVersion) && backupVersion > SCHEMA_VERSION) {
+            alert('Open Filter: このバックアップは新しいバージョンの設定のため復元できません。');
+            return;
+        }
+        const when = formatDateTime(backup.at);
+        const reason = backup.reason ? '（' + backup.reason + '）' : '';
+        if (!confirm('バックアップ ' + when + reason + ' から設定を復元しますか？\n現在の設定は上書きされます。')) return;
+        if (!createBackup('復元前')) {
+            alert('Open Filter: 現在の設定のバックアップに失敗したため、復元を中止しました。');
+            return;
+        }
+        const previous = snapshotState();
+        state = normalizeState(backup.state);
+        if (!saveState({ skipSync: true })) {
+            restoreStateSnapshot(previous);
+            return;
+        }
+        refreshPageCss();
+        applyAll();
+        syncObserver();
+        if (uiRoot) renderAll();
+        alert('Open Filter: バックアップから復元しました（トークン/共有キーは復元されません）。');
     }
 
     // ------------------------------------------------------------------
@@ -280,6 +496,43 @@
         return Boolean(getSyncToken());
     }
 
+    function isValidGasUrl(value) {
+        try {
+            const url = new URL(String(value || '').trim());
+            return url.protocol === 'https:' &&
+                url.hostname === 'script.google.com' &&
+                url.pathname.startsWith('/macros/');
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isValidGistRawUrl(value) {
+        try {
+            const url = new URL(String(value || '').trim());
+            return url.protocol === 'https:' && url.hostname === 'gist.githubusercontent.com';
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function validateRemoteState(data) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return '同期データの形式が不正です。';
+        }
+        const version = Number(data.version);
+        if (Number.isFinite(version) && version > SCHEMA_VERSION) {
+            return 'リモート設定がこのスクリプトより新しいバージョンです。';
+        }
+        if (!data.sites || typeof data.sites !== 'object' || Array.isArray(data.sites)) {
+            return '同期データに sites がありません。';
+        }
+        if (Object.keys(data.sites).length > MAX_SITES) {
+            return '同期データのサイト数が上限（' + MAX_SITES + '）を超えています。';
+        }
+        return '';
+    }
+
     function normalizeGistId(value) {
         const text = String(value || '').trim();
         const match = text.match(/([0-9a-f]{20,})/i);
@@ -312,7 +565,7 @@
                 'Accept': 'application/vnd.github+json',
                 'Authorization': 'Bearer ' + token,
                 'X-GitHub-Api-Version': '2022-11-28',
-                'User-Agent': 'OpenFilter/3.0'
+                'User-Agent': 'OpenFilter/' + RUNTIME_VERSION
             };
             if (body) headers['Content-Type'] = 'application/json';
             GM_xmlhttpRequest({
@@ -352,7 +605,7 @@
                 url,
                 headers: {
                     'Authorization': 'Bearer ' + token,
-                    'User-Agent': 'OpenFilter/3.0'
+                    'User-Agent': 'OpenFilter/' + RUNTIME_VERSION
                 },
                 timeout: 20000,
                 onload: (response) => {
@@ -376,12 +629,16 @@
                 reject(new Error('GAS の Web アプリ URL が設定されていません。'));
                 return;
             }
+            if (!isValidGasUrl(url)) {
+                reject(new Error('GAS の URL は https://script.google.com/macros/s/.../exec を指定してください。'));
+                return;
+            }
             if (!key) {
                 reject(new Error('GAS の共有キーが設定されていません。'));
                 return;
             }
 
-            const headers = { 'User-Agent': 'OpenFilter/3.0' };
+            const headers = { 'User-Agent': 'OpenFilter/' + RUNTIME_VERSION };
             let requestUrl = url;
             let data;
             if (method === 'GET') {
@@ -421,7 +678,7 @@
 
     function buildSyncPayload(syncedAt) {
         return {
-            version: 3,
+            version: SCHEMA_VERSION,
             globalEnabled: state.globalEnabled,
             sites: state.sites,
             ui: state.ui,
@@ -442,6 +699,9 @@
             throw new Error('GM_xmlhttpRequest が利用できません。');
         }
         if (syncBusy) throw new Error('別の同期処理が実行中です。');
+        if (storageBlocked) {
+            throw new Error('設定の保存が停止中のため、アップロードを中止しました。');
+        }
 
         const provider = getSyncProvider();
         if (provider === 'gist' && !getSyncToken()) {
@@ -562,6 +822,9 @@
                 if (!file) throw new Error('Gist に open-filter.json がありません。');
                 let content = file.content;
                 if (file.truncated && file.raw_url) {
+                    if (!isValidGistRawUrl(file.raw_url)) {
+                        throw new Error('Gist の raw URL が不正なため取得を中止しました。');
+                    }
                     content = await githubRequestText(file.raw_url, token);
                 }
                 try {
@@ -570,15 +833,32 @@
                     throw new Error('同期データの JSON が不正です。');
                 }
             }
-            if (!data || typeof data !== 'object') {
-                throw new Error('同期データの形式が不正です。');
+            const validationError = validateRemoteState(data);
+            if (validationError) {
+                throw new Error(validationError);
             }
 
             if (!force && state.sync.lastSyncAt && data.syncedAt && data.syncedAt <= state.sync.lastSyncAt) {
                 return { skipped: true, reason: 'up-to-date' };
             }
 
+            const remoteSites = Object.keys(data.sites).length;
+            const localSites = Object.keys(state.sites).length;
+            const countRules = (sites) => Object.values(sites || {}).reduce((total, profile) => {
+                return total + (profile && Array.isArray(profile.rules) ? profile.rules.length : 0);
+            }, 0);
+            const localRules = countRules(state.sites);
+
             const normalized = normalizeState(data);
+            const normalizedRules = countRules(normalized.sites);
+            if ((remoteSites === 0 || normalizedRules === 0) && (localSites > 0 || localRules > 0)) {
+                // 空のリモートデータでローカル設定を静かに消さない
+                if (silent) return { skipped: true, reason: 'empty-remote' };
+                if (!confirm('リモートの設定が空です。ローカルの設定を空にしますか？')) {
+                    return { canceled: true };
+                }
+            }
+
             normalized.sync = {
                 enabled: state.sync.enabled,
                 provider: provider,
@@ -589,13 +869,13 @@
                 dirty: false,
                 lastSyncAt: data.syncedAt || new Date().toISOString()
             };
-            state = normalized;
-            saveState({ skipSync: true });
+            if (!createBackup('同期ダウンロード')) {
+                throw new Error('バックアップに失敗したため、同期の適用を中止しました。');
+            }
+            if (!runStateChange(() => { state = normalized; }, { skipSync: true })) {
+                throw new Error('同期設定の保存に失敗しました。');
+            }
             scheduleSyncPoll();
-            refreshPageCss();
-            applyAll();
-            syncObserver();
-            if (uiRoot) renderAll();
             return { applied: true, remoteSyncedAt: data.syncedAt };
         } finally {
             syncBusy = false;
@@ -604,6 +884,7 @@
 
     function scheduleSyncUpload() {
         if (!IS_TOP_FRAME) return;
+        if (storageBlocked) return;
         if (!state.sync.enabled || !state.sync.autoUpload) return;
         if (!syncReady()) return;
         if (syncTimer) clearTimeout(syncTimer);
@@ -657,6 +938,7 @@
 
     function initSync() {
         if (!IS_TOP_FRAME) return;
+        if (storageBlocked) return;
 
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) return;
@@ -681,6 +963,8 @@
                     const result = await syncDownload({ silent: true });
                     if (result && result.applied) {
                         setSyncStatus('起動時にリモート設定を適用しました');
+                    } else if (result && result.skipped && result.reason === 'empty-remote') {
+                        setSyncStatus('空のリモート設定をスキップしました');
                     } else if (result && result.skipped && result.reason !== 'up-to-date') {
                         setSyncStatus('自動ダウンロードをスキップしました', true);
                     }
@@ -695,26 +979,50 @@
     function onSaveSyncSettings() {
         if (!uiRoot) return;
         const provider = uiRoot.querySelector('#uf-sync-provider').value === 'gas' ? 'gas' : 'gist';
-        state.sync.provider = provider;
-        state.sync.enabled = uiRoot.querySelector('#uf-sync-enabled').checked;
-        state.sync.autoUpload = uiRoot.querySelector('#uf-sync-auto-upload').checked;
-        state.sync.autoDownload = uiRoot.querySelector('#uf-sync-auto-download').checked;
+        const enabled = uiRoot.querySelector('#uf-sync-enabled').checked;
+        const autoUpload = uiRoot.querySelector('#uf-sync-auto-upload').checked;
+        const autoDownload = uiRoot.querySelector('#uf-sync-auto-download').checked;
+        const tokenInput = uiRoot.querySelector('#uf-gist-token');
+        const gistInput = uiRoot.querySelector('#uf-gist-id');
+        const gasUrlInput = uiRoot.querySelector('#uf-gas-url');
+        const keyInput = uiRoot.querySelector('#uf-gas-key');
+        const token = tokenInput.value.trim();
+        const gasKey = keyInput.value.trim();
 
+        if (provider === 'gas') {
+            const gasUrl = gasUrlInput.value.trim();
+            // 空欄は「未設定」として許可し、設定済みの場合は GAS の URL だけを許可する
+            if (gasUrl && !isValidGasUrl(gasUrl)) {
+                setSyncStatus('GAS URL は https://script.google.com/macros/s/.../exec を指定してください。', true);
+                return;
+            }
+        }
+
+        const snapshot = snapshotState();
+        state.sync.provider = provider;
+        state.sync.enabled = enabled;
+        state.sync.autoUpload = autoUpload;
+        state.sync.autoDownload = autoDownload;
         if (provider === 'gist') {
-            const tokenInput = uiRoot.querySelector('#uf-gist-token');
-            const token = tokenInput.value.trim();
+            state.sync.gistId = normalizeGistId(gistInput.value);
+        } else {
+            state.sync.gasUrl = gasUrlInput.value.trim();
+        }
+        if (!saveState({ skipSync: true })) {
+            restoreStateSnapshot(snapshot);
+            setSyncStatus('同期設定の保存に失敗しました。', true);
+            return;
+        }
+
+        // 秘密情報は設定本体の保存が成功してから更新する
+        if (provider === 'gist') {
             if (token) setSyncToken(token);
-            state.sync.gistId = normalizeGistId(uiRoot.querySelector('#uf-gist-id').value);
             tokenInput.value = '';
         } else {
-            state.sync.gasUrl = uiRoot.querySelector('#uf-gas-url').value.trim();
-            const keyInput = uiRoot.querySelector('#uf-gas-key');
-            const key = keyInput.value.trim();
-            if (key) setGasKey(key);
+            if (gasKey) setGasKey(gasKey);
             keyInput.value = '';
         }
 
-        saveState({ skipSync: true });
         setSyncStatus('同期設定を保存しました');
         renderDataTab();
         scheduleSyncPoll();
@@ -765,7 +1073,7 @@
         if (!host) return null;
         if (!state.sites[host]) {
             if (!create) return null;
-            state.sites[host] = { enabled: true, rules: [] };
+            state.sites[host] = { enabled: true, rules: [], invalid: [] };
         }
         return state.sites[host];
     }
@@ -1015,9 +1323,11 @@
     // 適用エンジン
     // ------------------------------------------------------------------
 
-    const stats = { hidden: 0, styled: 0, removed: 0 };
+    const stats = { hidden: 0, styled: 0, removed: 0, capped: false };
     const appliedElements = new Set();
+    const savedHideDisplay = new WeakMap();
     let pageStyleEl = null;
+    let pageSheet = null;
     let lastPageCss = '';
     let observer = null;
     const MAX_PENDING = 2000;
@@ -1046,10 +1356,28 @@
             }
         }
         const css = lines.join('\n');
-        if (css === lastPageCss && pageStyleEl && pageStyleEl.isConnected) return;
+        const sheetActive = pageSheet && 'adoptedStyleSheets' in document &&
+            document.adoptedStyleSheets.includes(pageSheet);
+        const styleActive = pageStyleEl && pageStyleEl.isConnected;
+        if (css === lastPageCss && (sheetActive || styleActive)) return;
         lastPageCss = css;
 
-        if (pageStyleEl && pageStyleEl.isConnected) {
+        // CSP の style-src 制限を避けるため、まず constructable stylesheet を試す
+        try {
+            if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in document) {
+                if (!sheetActive) {
+                    pageSheet = new CSSStyleSheet();
+                    document.adoptedStyleSheets = document.adoptedStyleSheets.concat([pageSheet]);
+                }
+                pageSheet.replaceSync(css);
+                return;
+            }
+        } catch (error) {
+            console.warn('[Open Filter] adoptedStyleSheets を利用できませんでした', error);
+            pageSheet = null;
+        }
+
+        if (styleActive) {
             pageStyleEl.textContent = css;
             return;
         }
@@ -1070,6 +1398,12 @@
         for (const element of appliedElements) {
             if (!element || !element.isConnected) continue;
             element.classList.remove(HIDDEN_CLASS);
+            if (savedHideDisplay.has(element)) {
+                const saved = savedHideDisplay.get(element);
+                savedHideDisplay.delete(element);
+                if (saved && saved.value) element.style.setProperty('display', saved.value, saved.priority || '');
+                else element.style.removeProperty('display');
+            }
             for (const className of Array.from(element.classList)) {
                 if (className.startsWith(CSS_CLASS_PREFIX)) element.classList.remove(className);
             }
@@ -1078,6 +1412,7 @@
         stats.hidden = 0;
         stats.styled = 0;
         stats.removed = 0;
+        stats.capped = false;
         pendingNodes.clear();
     }
 
@@ -1085,7 +1420,8 @@
         if (!element || element.nodeType !== 1 || !element.isConnected) return;
         // body/html への適用はページ全体（UI を含む）を失うため常に対象外とする
         if (element === document.body || element === document.documentElement) return;
-        if (element.id === HOST_ID || element.closest('#' + HOST_ID)) return;
+        if (element.id === HOST_ID || element.id === PICKER_ID) return;
+        if (element.closest && (element.closest('#' + HOST_ID) || element.closest('#' + PICKER_ID))) return;
         if (appliedElements.has(element)) return;
 
         let matched = null;
@@ -1111,7 +1447,15 @@
         let hidden = false;
         for (const rule of matched) {
             if (rule.action.type === 'hide') {
+                if (!savedHideDisplay.has(element)) {
+                    savedHideDisplay.set(element, {
+                        value: element.style.getPropertyValue('display'),
+                        priority: element.style.getPropertyPriority('display')
+                    });
+                }
                 element.classList.add(HIDDEN_CLASS);
+                // ページ側の display:block!important に負けないよう inline !important を併用する
+                element.style.setProperty('display', 'none', 'important');
                 hidden = true;
             } else if (rule.action.type === 'css') {
                 const className = cssClassFor(rule.id);
@@ -1152,6 +1496,7 @@
             applyToElement(candidates[index], rules);
         }
         if (candidates.length > MAX_TARGETS) {
+            stats.capped = true;
             console.warn(`[Open Filter] 対象要素が多すぎるため ${MAX_TARGETS} 件に制限しました（${candidates.length} 件）`);
         }
         updateUiStats();
@@ -1159,7 +1504,10 @@
 
     function scheduleApplyNodes(nodes) {
         for (const node of nodes) {
-            if (pendingNodes.size >= MAX_PENDING) break;
+            if (pendingNodes.size >= MAX_PENDING) {
+                stats.capped = true;
+                break;
+            }
             pendingNodes.add(node);
         }
         if (flushScheduled) return;
@@ -1176,7 +1524,8 @@
             const combined = buildCombinedSelector(rules);
             for (const node of pendingNodes) {
                 if (!node.isConnected) continue;
-                if (node.id === HOST_ID || (node.closest && node.closest('#' + HOST_ID))) continue;
+                if (node.id === HOST_ID || node.id === PICKER_ID) continue;
+                if (node.closest && (node.closest('#' + HOST_ID) || node.closest('#' + PICKER_ID))) continue;
                 try {
                     if (node.matches && node.matches(combined)) applyToElement(node, rules);
                 } catch (error) {
@@ -1189,6 +1538,7 @@
                     descendants = [];
                 }
                 const limit = Math.min(descendants.length, MAX_TARGETS);
+                if (descendants.length > MAX_TARGETS) stats.capped = true;
                 for (let index = 0; index < limit; index++) {
                     applyToElement(descendants[index], rules);
                 }
@@ -1206,7 +1556,9 @@
 
     function onMutations(mutations) {
         ensureUiHost();
-        if (pageStyleEl && !pageStyleEl.isConnected) refreshPageCss();
+        const sheetMissing = pageSheet && 'adoptedStyleSheets' in document &&
+            !document.adoptedStyleSheets.includes(pageSheet);
+        if ((pageStyleEl && !pageStyleEl.isConnected) || sheetMissing) refreshPageCss();
         if (!state.globalEnabled) return;
         const rules = getActiveRules();
         if (!rules.length) return;
@@ -1218,8 +1570,8 @@
             if (mutation.type !== 'childList') continue;
             for (const node of mutation.addedNodes) {
                 if (node.nodeType !== 1) continue;
-                if (node.id === HOST_ID) continue;
-                if (node.closest && node.closest('#' + HOST_ID)) continue;
+                if (node.id === HOST_ID || node.id === PICKER_ID) continue;
+                if (node.closest && (node.closest('#' + HOST_ID) || node.closest('#' + PICKER_ID))) continue;
                 nodes.push(node);
             }
         }
@@ -1453,7 +1805,7 @@
                     <div class="uf-brand">
                         <span class="uf-logo" aria-hidden="true">⚙</span>
                         <span>Open Filter</span>
-                        <span class="uf-version">v${VERSION}</span>
+                        <span class="uf-version">v${RUNTIME_VERSION}</span>
                     </div>
                     <div class="uf-header-actions">
                         <label class="uf-mini"><input type="checkbox" id="uf-global"> 全体</label>
@@ -1545,6 +1897,7 @@
                             </div>
                             <p class="uf-muted" id="uf-sync-status"></p>
                             <p class="uf-hint">トークンと共有キーはこの端末にのみ保存され、エクスポートには含まれません。Gist は secret ですが、URL を知っている人は閲覧できます。</p>
+                            <p class="uf-hint">秘密情報は信頼できるページで入力してください。ページ側のスクリプトによって入力が傍受される可能性があります。</p>
                         </div>
                         <div class="uf-card">
                             <h3>バックアップ</h3>
@@ -1583,6 +1936,8 @@
                                 <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。</li>
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
                                 <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。</li>
+                                <li>不正なルールは削除せず「復旧待ち」として保持します。エクスポートには含まれるため、修正して再インポートできます。</li>
+                                <li>削除・インポート・全削除の直前状態は自動バックアップされます。ユーザースクリプトメニューの「直前のバックアップから復元」で戻せます（トークン/共有キーは対象外）。</li>
                                 <li>SPAのURL変更にも追従します。</li>
                             </ul>
                             <h3>クラウド同期</h3>
@@ -1720,20 +2075,43 @@
         // トークンを扱うため、ページスクリプトから shadow root を参照できない closed にする
         uiRoot = uiHost.attachShadow({ mode: 'closed' });
 
-        const style = document.createElement('style');
-        style.textContent = UI_CSS;
-        uiRoot.appendChild(style);
+        applyShadowStyles(uiRoot, UI_CSS);
 
         const wrap = document.createElement('div');
-        wrap.innerHTML = UI_HTML;
-        uiRoot.appendChild(wrap);
-
-        const formWrap = uiRoot.querySelector('#uf-form-wrap');
-        formWrap.innerHTML = FORM_HTML;
+        try {
+            wrap.innerHTML = UI_HTML;
+            uiRoot.appendChild(wrap);
+            const formWrap = uiRoot.querySelector('#uf-form-wrap');
+            formWrap.innerHTML = FORM_HTML;
+        } catch (error) {
+            // Trusted Types 等で HTML を構築できない場合は UI を諦め、フィルタ適用は継続する
+            uiHost.remove();
+            uiHost = null;
+            uiRoot = null;
+            throw error;
+        }
 
         ensureUiHost();
         bindUi();
         applyTriggerVisibility();
+    }
+
+    function applyShadowStyles(root, css) {
+        if (!root) return false;
+        try {
+            if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in root) {
+                const sheet = new CSSStyleSheet();
+                sheet.replaceSync(css);
+                root.adoptedStyleSheets = [sheet];
+                return true;
+            }
+        } catch (error) {
+            console.warn('[Open Filter] adoptedStyleSheets を利用できませんでした', error);
+        }
+        const style = document.createElement('style');
+        style.textContent = css;
+        root.appendChild(style);
+        return false;
     }
 
     function ensureUiHost() {
@@ -1752,8 +2130,9 @@
     }
 
     function toggleTriggerVisibility() {
-        state.ui.hideTrigger = state.ui.hideTrigger !== true;
-        saveState();
+        runStateChange(() => {
+            state.ui.hideTrigger = state.ui.hideTrigger !== true;
+        }, { refreshCss: false, apply: false, sync: false, render: false });
         applyTriggerVisibility();
         if (uiRoot) renderSiteTab();
     }
@@ -1794,12 +2173,9 @@
 
         query('#uf-global').addEventListener('change', (event) => {
             if (!event.isTrusted) return;
-            state.globalEnabled = event.target.checked;
-            saveState();
-            refreshPageCss();
-            applyAll();
-            syncObserver();
-            renderAll();
+            runStateChange(() => {
+                state.globalEnabled = event.target.checked;
+            });
         });
 
         query('#uf-add').addEventListener('click', () => showForm(null));
@@ -1829,23 +2205,24 @@
 
         query('#uf-site-enabled').addEventListener('change', (event) => {
             if (!event.isTrusted) return;
-            const profile = getProfile(true);
-            profile.enabled = event.target.checked;
-            saveState();
-            applyAll();
-            syncObserver();
-            renderAll();
+            runStateChange(() => {
+                const profile = getProfile(true);
+                profile.enabled = event.target.checked;
+            });
         });
         query('#uf-show-frames').addEventListener('change', (event) => {
             if (!event.isTrusted) return;
-            state.ui.showInFrames = event.target.checked;
-            saveState();
+            runStateChange(() => {
+                state.ui.showInFrames = event.target.checked;
+            }, { refreshCss: false, apply: false, sync: false, render: false });
         });
         query('#uf-hide-trigger').addEventListener('change', (event) => {
             if (!event.isTrusted) return;
-            state.ui.hideTrigger = event.target.checked;
-            saveState();
+            runStateChange(() => {
+                state.ui.hideTrigger = event.target.checked;
+            }, { refreshCss: false, apply: false, sync: false, render: false });
             applyTriggerVisibility();
+            if (uiRoot) renderSiteTab();
         });
         query('#uf-here-only').addEventListener('change', renderRuleList);
         query('#uf-site-delete').addEventListener('click', (event) => {
@@ -1880,8 +2257,19 @@
     }
 
     function openPanel() {
+        if (!uiRoot) {
+            try {
+                createUi();
+            } catch (error) {
+                console.error('[Open Filter] UI の初期化に失敗しました', error);
+                alert('Open Filter: UI を初期化できませんでした。このページでは設定画面を開けません。');
+                return;
+            }
+        }
+        if (!uiRoot) return;
         ensureUiHost();
         const overlay = uiRoot.querySelector('#uf-overlay');
+        if (!overlay) return;
         overlay.hidden = false;
         renderAll();
         switchTab('rules');
@@ -1892,7 +2280,9 @@
             pickerState.finish();
             return;
         }
-        uiRoot.querySelector('#uf-overlay').hidden = true;
+        if (!uiRoot) return;
+        const overlay = uiRoot.querySelector('#uf-overlay');
+        if (overlay) overlay.hidden = true;
     }
 
     function switchTab(name) {
@@ -1923,8 +2313,16 @@
         const profile = getProfile(false);
         const enabled = state.globalEnabled && profile && profile.enabled;
         const count = profile ? profile.rules.length : 0;
-        element.textContent = `${location.host}${location.pathname} — ${enabled ? '有効' : '無効'} / ルール ${count} 件`;
+        const blocked = storageBlocked ? ' — 保存停止中' : '';
+        element.textContent = `${location.host}${location.pathname} — ${enabled ? '有効' : '無効'} / ルール ${count} 件${blocked}`;
         uiRoot.querySelector('#uf-host').textContent = location.host;
+    }
+
+    function createQuarantineNotice(count) {
+        const notice = document.createElement('p');
+        notice.className = 'uf-muted';
+        notice.textContent = `復旧待ちのルール ${count} 件（不正または上限超過のため適用していません。エクスポートには含まれます）`;
+        return notice;
     }
 
     function renderRuleList() {
@@ -1935,17 +2333,20 @@
         const formOpen = !uiRoot.querySelector('#uf-form-wrap').hidden;
         const profile = getProfile(false);
         const rules = profile ? profile.rules : [];
+        const invalidCount = profile ? profile.invalid.length : 0;
         const visible = hereOnly ? rules.filter((rule) => pageMatches(rule)) : rules;
 
         list.textContent = '';
         if (!rules.length) {
             empty.hidden = formOpen;
-            summary.textContent = '';
+            summary.textContent = invalidCount ? `復旧待ち ${invalidCount} 件` : '';
+            if (invalidCount) list.appendChild(createQuarantineNotice(invalidCount));
             return;
         }
         empty.hidden = true;
         summary.textContent = `${rules.length} 件のルール${hereOnly ? `（このページ: ${visible.length} 件）` : ''}`;
 
+        if (invalidCount) list.appendChild(createQuarantineNotice(invalidCount));
         for (const rule of visible) list.appendChild(createRuleRow(rule));
         if (!visible.length) {
             const message = document.createElement('p');
@@ -1965,11 +2366,9 @@
         check.title = 'このルールを有効にする';
         check.addEventListener('change', (event) => {
             if (!event.isTrusted) return;
-            rule.enabled = check.checked;
-            saveState();
-            applyAll();
-            syncObserver();
-            renderRuleList();
+            runStateChange(() => {
+                rule.enabled = check.checked;
+            });
         });
 
         const main = document.createElement('div');
@@ -2235,24 +2634,19 @@
         try {
             const rule = readForm();
             const profile = getProfile(true);
-            if (editingId) {
-                const index = profile.rules.findIndex((item) => item.id === editingId);
-                if (index >= 0) profile.rules[index] = rule;
-                else profile.rules.push(rule);
-            } else {
-                profile.rules.push(rule);
-            }
-            profile.enabled = true;
-            if (!saveState()) {
-                // 保存できなかった変更をメモリ上にも残さない（二重追加防止）
-                state = loadState();
-                return;
-            }
-            refreshPageCss();
-            applyAll();
-            syncObserver();
+            const editing = editingId;
+            const saved = runStateChange(() => {
+                if (editing) {
+                    const index = profile.rules.findIndex((item) => item.id === editing);
+                    if (index >= 0) profile.rules[index] = rule;
+                    else profile.rules.push(rule);
+                } else {
+                    profile.rules.push(rule);
+                }
+                profile.enabled = true;
+            });
+            if (!saved) return;
             hideForm();
-            renderAll();
         } catch (error) {
             showFormError(error.message);
         }
@@ -2294,22 +2688,16 @@
     function removeRule(id) {
         const profile = getProfile(false);
         if (!profile) return;
-        profile.rules = profile.rules.filter((rule) => rule.id !== id);
-        saveState();
-        refreshPageCss();
-        applyAll();
-        syncObserver();
-        renderAll();
+        runStateChange(() => {
+            profile.rules = profile.rules.filter((rule) => rule.id !== id);
+        });
     }
 
     function deleteSite() {
-        delete state.sites[location.host];
-        saveState();
-        refreshPageCss();
-        applyAll();
-        syncObserver();
+        runStateChange(() => {
+            delete state.sites[location.host];
+        });
         hideForm();
-        renderAll();
     }
 
     function showFormError(message) {
@@ -2338,8 +2726,7 @@
         pickerHost.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
         const root = pickerHost.attachShadow({ mode: 'closed' });
 
-        const style = document.createElement('style');
-        style.textContent = `
+        applyShadowStyles(root, `
             :host { all: initial; }
             .box {
                 position: fixed; display: none; border: 2px solid #0a84ff;
@@ -2361,8 +2748,7 @@
                 text-align: center; pointer-events: none; z-index: 4;
                 box-shadow: 0 4px 16px rgba(0,0,0,.3);
             }
-        `;
-        root.appendChild(style);
+        `);
 
         const box = document.createElement('div');
         box.className = 'box';
@@ -2551,7 +2937,9 @@
         query('#uf-site-path').textContent = location.pathname;
         const count = profile ? profile.rules.length : 0;
         const active = profile ? profile.rules.filter((rule) => rule.enabled && pageMatches(rule)).length : 0;
-        query('#uf-site-count').textContent = `ルール ${count} 件 / このページで有効 ${active} 件`;
+        const invalid = profile ? profile.invalid.length : 0;
+        query('#uf-site-count').textContent = `ルール ${count} 件 / このページで有効 ${active} 件` +
+            (invalid ? ` / 復旧待ち ${invalid} 件` : '');
     }
 
     function renderDataTab() {
@@ -2564,7 +2952,11 @@
             const rules = Object.values(state.sites).reduce((total, profile) => {
                 return total + (profile.rules ? profile.rules.length : 0);
             }, 0);
-            element.textContent = `${sites} サイト / ${rules} ルール / 約 ${formatBytes(bytes)}`;
+            const invalid = Object.values(state.sites).reduce((total, profile) => {
+                return total + (profile.invalid ? profile.invalid.length : 0);
+            }, 0);
+            element.textContent = `${sites} サイト / ${rules} ルール / 復旧待ち ${invalid} 件 / 約 ${formatBytes(bytes)}` +
+                (storageBlocked ? '（保存停止中）' : '');
         } catch (error) {
             element.textContent = 'サイズを取得できませんでした。';
         }
@@ -2610,7 +3002,7 @@
             return;
         }
         const host = location.host.replace(/[^a-z0-9.-]/gi, '_');
-        downloadJson({ version: 3, host: location.host, profile }, `open-filter-${host}-${dateStamp()}.json`);
+        downloadJson({ version: SCHEMA_VERSION, host: location.host, profile }, `open-filter-${host}-${dateStamp()}.json`);
     }
 
     function dateStamp() {
@@ -2645,23 +3037,61 @@
         reader.readAsText(file);
     }
 
+    function validateImportData(data, kind) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return 'JSONの形式が不正です。';
+        }
+        const version = Number(data.version);
+        if (Number.isFinite(version) && version > SCHEMA_VERSION) {
+            return 'このスクリプトより新しいバージョンの設定です（version ' + version + '）。読み込めません。';
+        }
+        if (kind === 'all') {
+            if (!data.sites || typeof data.sites !== 'object' || Array.isArray(data.sites)) {
+                return '全体設定のJSONではありません（sites がありません）。\nサイト別エクスポートは「このサイトにインポート」を使用してください。';
+            }
+            if (Object.keys(data.sites).length > MAX_SITES) {
+                return 'サイト数が上限（' + MAX_SITES + '）を超えているため読み込めません。';
+            }
+        }
+        return '';
+    }
+
+    function countImported(imported) {
+        const profiles = Object.values(imported.sites || {});
+        return {
+            sites: profiles.length,
+            rules: profiles.reduce((total, profile) => total + profile.rules.length, 0),
+            quarantined: profiles.reduce((total, profile) => total + profile.invalid.length, 0)
+        };
+    }
+
     function importAllFile(event) {
         const file = event.target.files && event.target.files[0];
         event.target.value = '';
         if (!file) return;
         readJsonFile(file, (data) => {
-            if (!data || typeof data !== 'object') {
-                alert('JSONの形式が不正です。');
+            const error = validateImportData(data, 'all');
+            if (error) {
+                alert(error);
                 return;
             }
-            if (!confirm('現在のすべての設定を上書きしてインポートしますか？')) return;
-            state = normalizeState(data);
-            saveState();
-            refreshPageCss();
-            applyAll();
-            syncObserver();
+            const imported = normalizeState(data);
+            // 同期設定はローカルのものを保持する（インポート経由の外部送信・設定ハイジャックを防ぐ）
+            imported.sync = Object.assign({}, state.sync);
+            const counts = countImported(imported);
+            const quarantineNote = counts.quarantined
+                ? `\n不正なルール ${counts.quarantined} 件は復旧待ちとして保持します。`
+                : '';
+            if (!confirm(`現在のすべての設定を、${counts.sites} サイト / ${counts.rules} ルールで置き換えますか？\n現在の設定は自動バックアップします。${quarantineNote}`)) return;
+            if (!createBackup('全体インポート')) {
+                alert('バックアップに失敗したため、インポートを中止しました。');
+                return;
+            }
+            if (!runStateChange(() => { state = imported; })) {
+                alert('インポートした設定の保存に失敗しました。');
+                return;
+            }
             hideForm();
-            renderAll();
         });
     }
 
@@ -2670,8 +3100,9 @@
         event.target.value = '';
         if (!file) return;
         readJsonFile(file, (data) => {
-            if (!data || typeof data !== 'object') {
-                alert('JSONの形式が不正です。');
+            const error = validateImportData(data, 'site');
+            if (error) {
+                alert(error);
                 return;
             }
             const profile = data.profile && typeof data.profile === 'object'
@@ -2683,37 +3114,33 @@
             }
             const host = String(data.host || '').trim();
             const message = host && host !== location.host
-                ? `この設定は ${host} 用です。現在のサイト（${location.host}）の設定を上書きしてインポートしますか？`
-                : 'このサイトの設定を上書きしてインポートしますか？';
+                ? `この設定は ${host} 用です。現在のサイト（${location.host}）の設定を上書きしてインポートしますか？\n現在の設定は自動バックアップします。`
+                : 'このサイトの設定を上書きしてインポートしますか？\n現在の設定は自動バックアップします。';
             if (!confirm(message)) return;
-            state.sites[location.host] = normalizeProfile(profile);
-            saveState();
-            refreshPageCss();
-            applyAll();
-            syncObserver();
+            if (!createBackup('サイトインポート')) {
+                alert('バックアップに失敗したため、インポートを中止しました。');
+                return;
+            }
+            const importedProfile = normalizeProfile(profile);
+            if (!runStateChange(() => { state.sites[location.host] = importedProfile; })) {
+                alert('インポートした設定の保存に失敗しました。');
+                return;
+            }
             hideForm();
-            renderAll();
         });
     }
 
     function resetAll() {
-        if (!confirm('すべてのサイトの設定を削除します。よろしいですか？')) return;
-        state = {
-            version: 3,
-            globalEnabled: true,
-            sites: Object.create(null),
-            ui: { showInFrames: false, hideTrigger: false },
-            sync: {
-                enabled: false,
-                provider: 'gist',
-                gistId: '',
-                gasUrl: '',
-                autoUpload: true,
-                autoDownload: true,
-                dirty: false,
-                lastSyncAt: ''
-            }
-        };
+        if (!confirm('すべてのサイトの設定を削除します。よろしいですか？\n（Gist/GAS のトークン・共有キーも削除されます）')) return;
+        if (!createBackup('全設定削除')) {
+            alert('バックアップに失敗したため、削除を中止しました。');
+            return;
+        }
+        if (!runStateChange(() => { state = createDefaultState(); }, { skipSync: true })) {
+            alert('設定の削除に失敗しました。');
+            return;
+        }
+        // 保存が成功してから秘密情報を削除する
         store.set(SYNC_TOKEN_KEY, '');
         store.set(SYNC_GAS_KEY, '');
         if (syncTimer) {
@@ -2726,10 +3153,6 @@
         }
         syncStatus = '';
         syncStatusIsError = false;
-        saveState({ skipSync: true });
-        refreshPageCss();
-        applyAll();
-        syncObserver();
         hideForm();
         renderAll();
     }
@@ -2746,6 +3169,7 @@
             if (stats.hidden) parts.push(`非表示 ${stats.hidden}`);
             if (stats.styled) parts.push(`CSS ${stats.styled}`);
             if (stats.removed) parts.push(`削除 ${stats.removed}`);
+            if (stats.capped) parts.push('上限到達');
             statsElement.textContent = parts.join(' / ');
         }
         const badge = uiRoot.querySelector('#uf-badge');
@@ -2804,6 +3228,7 @@
             if (typeof GM_registerMenuCommand === 'function') {
                 GM_registerMenuCommand('Open Filter 設定を開く', openPanel);
                 GM_registerMenuCommand('歯車ボタン（⚙）の表示を切り替える', toggleTriggerVisibility);
+                GM_registerMenuCommand('直前のバックアップから復元', restoreLatestBackup);
             }
         } catch (error) {
             // 未対応環境では何もしない
@@ -2815,6 +3240,7 @@
             if (typeof GM_addValueChangeListener !== 'function') return;
             GM_addValueChangeListener(STORAGE_KEY, (name, oldValue, newValue, remote) => {
                 if (!remote || newValue == null) return;
+                if (storageBlocked) return;
                 // FireMonkey は同一タブの変更も remote=true で通知するため、
                 // 自分の保存と同一内容なら再読み込みしない
                 try {
@@ -2822,7 +3248,13 @@
                 } catch (error) {
                     // 比較できない場合は通常の再読み込みに進む
                 }
+                const previous = state;
                 state = loadState();
+                if (storageBlocked) {
+                    state = previous;
+                    if (uiRoot) renderAll();
+                    return;
+                }
                 refreshPageCss();
                 applyAll();
                 syncObserver();
@@ -2839,15 +3271,31 @@
     }
 
     function init() {
-        if (loadedCorrupt) saveState();
-        createUi();
-        refreshPageCss();
-        applyAll();
-        syncObserver();
-        hookHistory();
+        // UI の初期化に失敗してもメニューから復帰できるよう、先に登録する
         if (IS_TOP_FRAME) registerMenu();
+        // 破損時は退避済みのデータを壊さないよう、同期アップロードは行わない
+        if (loadedCorrupt) saveState({ skipSync: true });
+        try {
+            createUi();
+        } catch (error) {
+            console.error('[Open Filter] UI の初期化に失敗しました', error);
+        }
+        try {
+            refreshPageCss();
+            applyAll();
+            syncObserver();
+        } catch (error) {
+            console.error('[Open Filter] フィルタの初期化に失敗しました', error);
+        }
+        try {
+            hookHistory();
+        } catch (error) {
+            console.warn('[Open Filter] history のフックに失敗しました', error);
+        }
         watchStorage();
         initSync();
+        if (loadedCorrupt) notifyCorruptOnce();
+        if (storageBlocked) notifyStorageBlocked();
     }
 
     if (document.readyState === 'loading') {
