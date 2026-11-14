@@ -40,7 +40,7 @@ function seedState(rules, options) {
     version: opts.version || 3,
     globalEnabled: true,
     sites: { [HOST]: { enabled: opts.siteEnabled !== false, rules: rules || [] } },
-    ui: { showInFrames: false, hideTrigger: false, protectedSites: opts.protectedSites || [] },
+    ui: { showInFrames: false, hideTrigger: opts.hideTrigger === true, protectedSites: opts.protectedSites || [] },
     sync
   };
 }
@@ -98,7 +98,8 @@ const IMPORTANT = '<!doctype html><html lang="ja"><head><meta charset="utf-8"><s
 const BURST = '<!doctype html><html lang="ja"><head><meta charset="utf-8"></head><body><div id="late-list"></div><main style="height:1200px">c</main><script>setTimeout(function(){const list=document.getElementById("late-list");const fragment=document.createDocumentFragment();for(let i=0;i<2500;i++){const d=document.createElement("div");d.className="late";d.textContent="x";fragment.appendChild(d);}list.appendChild(fragment);},200);</script></body></html>';
 const DYNAMIC_TEXT = '<!doctype html><html lang="ja"><head><meta charset="utf-8"></head><body><div class="card" id="card1"><span class="title" id="title1">広告</span><p>本文</p></div><main style="height:1200px">c</main></body></html>';
 const DYNAMIC_ATTR = '<!doctype html><html lang="ja"><head><meta charset="utf-8"></head><body><div class="card" id="card1" data-tag="ad"><span class="title">x</span></div><main style="height:1200px">c</main></body></html>';
-const PAGES = { plain: PLAIN, important: IMPORTANT, csp: PLAIN, tt: PLAIN, burst: BURST, 'dynamic-text': DYNAMIC_TEXT, 'dynamic-attr': DYNAMIC_ATTR };
+const DYNAMIC_CLASS = '<!doctype html><html lang="ja"><head><meta charset="utf-8"></head><body><div id="target" class="card">x</div><main style="height:1200px">c</main></body></html>';
+const PAGES = { plain: PLAIN, important: IMPORTANT, csp: PLAIN, tt: PLAIN, burst: BURST, 'dynamic-text': DYNAMIC_TEXT, 'dynamic-attr': DYNAMIC_ATTR, 'dynamic-class': DYNAMIC_CLASS };
 
 let PORT = 0;
 let HOST = '';
@@ -395,6 +396,31 @@ async function runChromium(browser) {
     await scenario.context.close();
   }
 
+  // 6c) 歯車の非表示設定が同期でリセットされない
+  {
+    const remotePayload = {
+      version: 3, globalEnabled: true,
+      sites: { [HOST]: { enabled: true, rules: [rule('.ad', 'r_remote')] } },
+      ui: { showInFrames: false, hideTrigger: false },
+      sync: {}, syncedAt: '2026-06-01T00:00:00.000Z'
+    };
+    const sync = { enabled: true, provider: 'gas', gasUrl: 'https://script.google.com/macros/s/safety/exec', autoUpload: false, autoDownload: true, dirty: false, lastSyncAt: '' };
+    const seed = seedState([rule('.ad', 'r_local')], { sync, hideTrigger: true });
+    const scenario = await openScenario(browser, 'plain', seed, {
+      store: { open_filter_state_v3: JSON.stringify(seed), open_filter_gas_key: 'GAS_KEY' },
+      routeGas: remotePayload,
+      wait: 2600
+    });
+    const stored = await readStore(scenario.page);
+    const triggerHidden = await scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      return host ? host.shadowRoot.querySelector('#uf-trigger').hidden : null;
+    });
+    info('歯車非表示: 同期後の状態', JSON.stringify({ hideTrigger: stored.state.ui.hideTrigger, triggerHidden }));
+    check('歯車非表示: 同期ダウンロードでローカルのhideTriggerが上書きされない', stored.state.ui.hideTrigger === true && triggerHidden === true, JSON.stringify({ hideTrigger: stored.state.ui.hideTrigger, triggerHidden }));
+    await scenario.context.close();
+  }
+
   // 7) 未知バージョン・読込失敗・保存失敗
   {
     const scenario = await openScenario(browser, 'plain', seedState([rule('.ad', 'r_future')], { version: 99 }));
@@ -641,7 +667,7 @@ async function runChromium(browser) {
 
   // 12) エクスポートの識別子サニタイズ
   {
-    const seed = seedState([rule('.ad', 'r_export')], { sync: { enabled: false, provider: 'gist', gistId: '0123456789abcdef0123', gasUrl: 'https://script.google.com/macros/s/secret/exec', autoUpload: true, autoDownload: true, dirty: false, lastSyncAt: '' } });
+    const seed = seedState([rule('.ad', 'r_export')], { hideTrigger: true, sync: { enabled: false, provider: 'gist', gistId: '0123456789abcdef0123', gasUrl: 'https://script.google.com/macros/s/secret/exec', autoUpload: true, autoDownload: true, dirty: false, lastSyncAt: '' } });
     const scenario = await openScenario(browser, 'plain', seed, { store: { open_filter_state_v3: JSON.stringify(seed), open_filter_gist_token: 'ghp_SECRET', open_filter_gas_key: 'GAS_KEY' } });
     await waitForUi(scenario.page);
     await openPanel(scenario.page);
@@ -653,6 +679,7 @@ async function runChromium(browser) {
     const parsed = JSON.parse(content);
     info('エクスポート: sync セクション', JSON.stringify(parsed.sync));
     check('エクスポート: Gist ID / GAS URL / トークンを含まない', parsed.sync.gistId === '' && parsed.sync.gasUrl === '' && !content.includes('ghp_SECRET') && !content.includes('GAS_KEY'), JSON.stringify(parsed.sync));
+    check('エクスポート: 歯車の表示設定を含まない', parsed.ui.hideTrigger !== true, JSON.stringify(parsed.ui));
     await scenario.context.close();
   }
 
@@ -679,13 +706,13 @@ async function runChromium(browser) {
     await waitForUi(scenario.page);
     const initial = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     await scenario.page.evaluate(() => { document.getElementById('title1').textContent = '記事'; });
-    await scenario.page.waitForTimeout(1500);
+    await scenario.page.waitForTimeout(4000);
     const afterTextReplace = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     await scenario.page.evaluate(() => { document.getElementById('title1').firstChild.data = '広告'; });
-    await scenario.page.waitForTimeout(1500);
+    await scenario.page.waitForTimeout(4000);
     const afterCharData = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     await scenario.page.evaluate(() => { document.getElementById('title1').firstChild.data = '記事'; });
-    await scenario.page.waitForTimeout(1500);
+    await scenario.page.waitForTimeout(4000);
     const afterCharData2 = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     info('動的テキスト: 初期/置換後/文字データ変更後', JSON.stringify({ initial, afterTextReplace, afterCharData, afterCharData2 }));
     check('動的追従: テキスト置換で非表示が解除される', initial === 'none' && afterTextReplace !== 'none', JSON.stringify({ initial, afterTextReplace }));
@@ -704,14 +731,28 @@ async function runChromium(browser) {
     await waitForUi(scenario.page);
     const initial = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     await scenario.page.evaluate(() => { document.getElementById('card1').setAttribute('data-tag', 'article'); });
-    await scenario.page.waitForTimeout(1500);
+    await scenario.page.waitForTimeout(4000);
     const afterAttr = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     await scenario.page.evaluate(() => { document.getElementById('card1').setAttribute('data-tag', 'ad'); });
-    await scenario.page.waitForTimeout(1500);
+    await scenario.page.waitForTimeout(4000);
     const afterAttr2 = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('card1')).display);
     info('動的属性: 初期/属性変更後', JSON.stringify({ initial, afterAttr, afterAttr2 }));
     check('動的追従: 属性変更で非表示が解除される', initial === 'none' && afterAttr !== 'none', JSON.stringify({ initial, afterAttr }));
     check('動的追従: 属性を戻すと再び非表示になる', afterAttr2 === 'none', 'display=' + afterAttr2);
+    await scenario.context.close();
+  }
+  {
+    const scenario = await openScenario(browser, 'dynamic-class', seedState([rule('.ad', 'r_class')]));
+    await waitForUi(scenario.page);
+    const initial = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('target')).display);
+    await scenario.page.evaluate(() => { document.getElementById('target').classList.add('ad'); });
+    await scenario.page.waitForTimeout(4000);
+    const afterAdd = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('target')).display);
+    await scenario.page.evaluate(() => { document.getElementById('target').classList.remove('ad'); });
+    await scenario.page.waitForTimeout(4000);
+    const afterRemove = await scenario.page.evaluate(() => getComputedStyle(document.getElementById('target')).display);
+    info('動的クラス: 初期/追加後/削除後', JSON.stringify({ initial, afterAdd, afterRemove }));
+    check('動的追従: クラス変更でhideが適用・解除される', initial !== 'none' && afterAdd === 'none' && afterRemove !== 'none', JSON.stringify({ initial, afterAdd, afterRemove }));
     await scenario.context.close();
   }
 

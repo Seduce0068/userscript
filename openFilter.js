@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.9.1
+// @version      3.9.2
 // @updateURL    https://gist.githubusercontent.com/Seduce0068/e4c597b30b872dc1fb247f1843825009/raw/openFilter.user.js
 // @downloadURL  https://gist.githubusercontent.com/Seduce0068/e4c597b30b872dc1fb247f1843825009/raw/openFilter.user.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.9.1';
+    const VERSION = '3.9.2';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -768,8 +768,7 @@
             globalEnabled: state.globalEnabled,
             sites: state.sites,
             ui: {
-                showInFrames: state.ui.showInFrames,
-                hideTrigger: state.ui.hideTrigger
+                showInFrames: state.ui.showInFrames
             },
             sync: {
                 enabled: state.sync.enabled,
@@ -1000,6 +999,8 @@
             }
 
             normalized.ui.protectedSites = state.ui.protectedSites.slice();
+            // 歯車の表示設定は端末ごとのUI設定のため、同期で上書きしない
+            normalized.ui.hideTrigger = state.ui.hideTrigger;
             normalized.sync = {
                 enabled: state.sync.enabled,
                 provider: provider,
@@ -1748,18 +1749,32 @@
     }
 
     function collectSelectorAttributes(selector, target) {
+        const text = String(selector || '');
         const regex = /\[\s*([a-zA-Z_][\w:-]*)/g;
         let match;
-        while ((match = regex.exec(String(selector || '')))) {
+        while ((match = regex.exec(text))) {
             target.add(match[1].toLowerCase());
+        }
+        // クラス/IDセレクタはclass/id属性の変化に依存する
+        if (/\.[A-Za-z_-][\w-]*/.test(text)) target.add('class');
+        if (/#[A-Za-z_-][\w-]*/.test(text)) target.add('id');
+        const pseudoAttributes = {
+            ':checked': 'checked',
+            ':disabled': 'disabled',
+            ':hidden': 'hidden',
+            ':open': 'open',
+            ':selected': 'selected',
+            ':required': 'required',
+            ':read-only': 'readonly',
+            ':read-write': 'readonly'
+        };
+        for (const [pseudo, attribute] of Object.entries(pseudoAttributes)) {
+            if (text.includes(pseudo)) target.add(attribute);
         }
     }
 
     function buildObservationOptions(rules) {
-        const attributeFilter = new Set([
-            'class', 'id', 'href', 'src', 'alt', 'title', 'hidden', 'checked',
-            'selected', 'disabled', 'open', 'aria-label', 'aria-expanded', 'aria-hidden'
-        ]);
+        const attributeFilter = new Set();
         let characterData = false;
         for (const rule of rules) {
             collectSelectorAttributes(rule.selector, attributeFilter);
@@ -1795,7 +1810,7 @@
     function scheduleDynamicApply() {
         if (dynamicTimer) return;
         const elapsed = Date.now() - lastDynamicApply;
-        const delay = Math.max(300, 1000 - elapsed);
+        const delay = Math.max(1000, 3000 - elapsed);
         dynamicTimer = setTimeout(() => {
             dynamicTimer = 0;
             if (document.hidden) {
@@ -1816,8 +1831,6 @@
         if (!state.globalEnabled) return;
         const rules = getActiveRules();
         if (!rules.length) return;
-        const combined = buildCombinedSelector(rules);
-        if (!combined) return;
         const hasTextRules = rules.some((rule) => rule.probe && rule.probe.type === 'text');
         const hasCountRules = rules.some((rule) => rule.match && rule.match.type === 'count');
 
@@ -2242,7 +2255,7 @@
                                 <li>属性値で判定する場合は、属性名（例: <code>href</code>, <code>data-tag</code>）を指定します。</li>
                                 <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。外部リクエストを防ぐため <code>url()</code> / <code>@import</code> / <code>expression()</code> は使用できません。</li>
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
-                                <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。</li>
+                                <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。この表示設定は端末ごとで、同期・エクスポートの対象外です。</li>
                                 <li>不正なルールは削除せず「復旧待ち」として保持します。エクスポートには含まれるため、修正して再インポートできます。</li>
                                 <li>ルール削除・サイト削除・インポート・全削除の直前状態は自動バックアップされます。ユーザースクリプトメニューの「直前のバックアップから復元」で戻せます（トークン/共有キーは対象外）。</li>
                                 <li>金融・医療・管理画面などは「サイト」タブの「保護」でフィルタを停止できます。保護中は歯車ボタンも非表示になり、このページから新しいルールを作る操作も無効になります。保護サイトの一覧は同期・エクスポートに含まれません。</li>
@@ -3568,6 +3581,8 @@
         if (exported.ui) {
             // 保護サイトの一覧は閲覧先の傾向を含むため共有用エクスポートには含めない
             exported.ui.protectedSites = [];
+            // 歯車の表示設定は端末ごとの設定のため共有用エクスポートには含めない
+            exported.ui.hideTrigger = false;
         }
         if (exported.sync) {
             // Gist ID / GAS URL は秘密に近い識別子のため共有用エクスポートには含めない
@@ -3664,8 +3679,9 @@
             const imported = normalizeState(data);
             // 同期設定はローカルのものを保持する（インポート経由の外部送信・設定ハイジャックを防ぐ）
             imported.sync = Object.assign({}, state.sync);
-            // 保護サイトの一覧は端末ごとの安全設定としてローカルを保持する
+            // 保護サイトの一覧と歯車の表示設定は端末ごとの設定としてローカルを保持する
             imported.ui.protectedSites = state.ui.protectedSites.slice();
+            imported.ui.hideTrigger = state.ui.hideTrigger;
             const counts = countImported(imported);
             const quarantineNote = counts.quarantined
                 ? `\n不正なルール ${counts.quarantined} 件は復旧待ちとして保持します。`
