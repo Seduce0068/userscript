@@ -17,6 +17,7 @@ generated:
 `openFilter.js` の回帰テストです。CI（`.github/workflows/userscript-tests.yml`）とローカルの両方で実行できます。
 
 - `check-userscript.mjs`: メタデータ・`@version`と`VERSION`の一致・`@grant`/`@connect`・禁止パターンの静的検証
+- `check-gas.mjs`: `gas/Code.gs` の構文・`doGet`/`doPost`・マニフェストの検証
 - `run.cjs`: 歯車UI、ピッカー、ルール、エクスポートなどの機能回帰
 - `safety.cjs`: データ保全、CSP、同期、保護サイト、動的追従、a11yなど安全対策の回帰
 

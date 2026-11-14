@@ -370,6 +370,31 @@ async function runChromium(browser) {
     await scenario.context.close();
   }
 
+  // 6b) GASのPOST送信（キーをURLに含めない）
+  {
+    const remotePayload = {
+      version: 3, globalEnabled: true,
+      sites: { [HOST]: { enabled: true, rules: [rule('.ad', 'r_post_remote')] } },
+      ui: { showInFrames: false, hideTrigger: false },
+      sync: {}, syncedAt: '2026-06-01T00:00:00.000Z'
+    };
+    const sync = { enabled: true, provider: 'gas', gasUrl: 'https://script.google.com/macros/s/safety/exec', gasTransport: 'post', autoUpload: false, autoDownload: true, dirty: false, lastSyncAt: '' };
+    const seed = seedState([rule('.ad', 'r_post_local')], { sync });
+    const gasRequests = [];
+    const scenario = await openScenario(browser, 'plain', seed, {
+      store: { open_filter_state_v3: JSON.stringify(seed), open_filter_gas_key: 'GAS_KEY' },
+      routeGas: remotePayload,
+      gasRequests,
+      wait: 2600
+    });
+    const stored = await readStore(scenario.page);
+    const first = gasRequests[0] || {};
+    info('GAS POST: 取得リクエスト', JSON.stringify({ method: first.method, url: first.url, body: first.body }));
+    check('GAS POST: 取得時にキーをURLへ含めず本文で送る', first.method === 'POST' && !String(first.url).includes('key=') && String(first.body).includes('"action":"fetch"') && String(first.body).includes('GAS_KEY'), JSON.stringify({ method: first.method, url: first.url, body: first.body }));
+    check('GAS POST: リモート設定を適用する', stored.state.sites[HOST].rules.some((r) => r.id === 'r_post_remote'), JSON.stringify(stored.state.sites[HOST].rules.map((r) => r.id)));
+    await scenario.context.close();
+  }
+
   // 7) 未知バージョン・読込失敗・保存失敗
   {
     const scenario = await openScenario(browser, 'plain', seedState([rule('.ad', 'r_future')], { version: 99 }));
@@ -973,6 +998,24 @@ async function runChromium(browser) {
     });
     const stored = await readStore(scenario.page);
     check('GAS: 不正URL（http/任意ホスト）を拒否する', status.includes('GAS URL') && stored.state.sync.gasUrl === '', JSON.stringify({ status, gasUrl: stored.state.sync.gasUrl }));
+    await scenario.context.close();
+  }
+  {
+    const scenario = await openScenario(browser, 'plain', seedState([]));
+    await waitForUi(scenario.page);
+    await openPanel(scenario.page);
+    await clickShadow(scenario.page, '.uf-tab[data-tab="data"]');
+    await scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      const root = host.shadowRoot;
+      root.querySelector('#uf-sync-provider').value = 'gas';
+      root.querySelector('#uf-gas-url').value = 'https://script.google.com/macros/s/safety/exec';
+      root.querySelector('#uf-gas-key').value = 'KEY';
+      root.querySelector('#uf-gas-transport').value = 'post';
+    });
+    await clickShadow(scenario.page, '#uf-sync-save');
+    const stored = await readStore(scenario.page);
+    check('GAS: 送信方式POSTをUIから保存できる', stored.state.sync.gasTransport === 'post' && stored.state.sync.gasUrl === 'https://script.google.com/macros/s/safety/exec', JSON.stringify({ gasTransport: stored.state.sync.gasTransport, gasUrl: stored.state.sync.gasUrl }));
     await scenario.context.close();
   }
 }

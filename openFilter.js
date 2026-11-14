@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.8.1
+// @version      3.9.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.8.1';
+    const VERSION = '3.9.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -133,6 +133,7 @@
                 provider: 'gist',
                 gistId: '',
                 gasUrl: '',
+                gasTransport: 'get',
                 autoUpload: true,
                 autoDownload: true,
                 dirty: false,
@@ -155,6 +156,7 @@
             out.sync.provider = raw.sync.provider === 'gas' ? 'gas' : 'gist';
             out.sync.gistId = String(raw.sync.gistId || '').slice(0, 100);
             out.sync.gasUrl = String(raw.sync.gasUrl || '').slice(0, 1000);
+            out.sync.gasTransport = raw.sync.gasTransport === 'post' ? 'post' : 'get';
             out.sync.autoUpload = raw.sync.autoUpload !== false;
             out.sync.autoDownload = raw.sync.autoDownload !== false;
             out.sync.dirty = raw.sync.dirty === true;
@@ -545,6 +547,10 @@
         return state.sync.provider === 'gas' ? 'gas' : 'gist';
     }
 
+    function getGasTransport() {
+        return state.sync.gasTransport === 'post' ? 'post' : 'get';
+    }
+
     function syncReady() {
         if (getSyncProvider() === 'gas') {
             return Boolean(String(state.sync.gasUrl || '').trim() && getGasKey());
@@ -711,17 +717,25 @@
             }
 
             const headers = { 'User-Agent': 'OpenFilter/' + RUNTIME_VERSION };
+            let requestMethod = method;
             let requestUrl = url;
             let data;
             if (method === 'GET') {
-                requestUrl += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
+                if (getGasTransport() === 'post') {
+                    // 新しい GAS スクリプトでは、キーを URL ではなく本文で送る
+                    requestMethod = 'POST';
+                    headers['Content-Type'] = 'text/plain;charset=UTF-8';
+                    data = JSON.stringify({ key, action: 'fetch' });
+                } else {
+                    requestUrl += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
+                }
             } else {
                 headers['Content-Type'] = 'text/plain;charset=UTF-8';
                 data = JSON.stringify({ key, content });
             }
 
             GM_xmlhttpRequest({
-                method,
+                method: requestMethod,
                 url: requestUrl,
                 headers,
                 data,
@@ -762,6 +776,7 @@
                 provider: getSyncProvider(),
                 gistId: state.sync.gistId,
                 gasUrl: state.sync.gasUrl,
+                gasTransport: state.sync.gasTransport,
                 autoUpload: state.sync.autoUpload,
                 autoDownload: state.sync.autoDownload
             },
@@ -1125,6 +1140,7 @@
         const tokenInput = uiRoot.querySelector('#uf-gist-token');
         const gistInput = uiRoot.querySelector('#uf-gist-id');
         const gasUrlInput = uiRoot.querySelector('#uf-gas-url');
+        const gasTransportInput = uiRoot.querySelector('#uf-gas-transport');
         const keyInput = uiRoot.querySelector('#uf-gas-key');
         const token = tokenInput.value.trim();
         const gasKey = keyInput.value.trim();
@@ -1147,6 +1163,7 @@
             state.sync.gistId = normalizeGistId(gistInput.value);
         } else {
             state.sync.gasUrl = gasUrlInput.value.trim();
+            state.sync.gasTransport = gasTransportInput && gasTransportInput.value === 'post' ? 'post' : 'get';
         }
         if (!saveState({ skipSync: true })) {
             restoreStateSnapshot(snapshot);
@@ -2170,7 +2187,13 @@
                                 <label class="uf-field">共有キー
                                     <input type="password" id="uf-gas-key" autocomplete="off" placeholder="保存済みの場合は空欄">
                                 </label>
-                                <p class="uf-hint">Google Apps Script の Web アプリとしてデプロイし、URL と共有キーを設定します。OAuth は不要です。</p>
+                                <label class="uf-field">送信方式
+                                    <select id="uf-gas-transport">
+                                        <option value="get">GET（旧サーバ互換・キーがURLに残る）</option>
+                                        <option value="post">POST（推奨・キーを本文で送信）</option>
+                                    </select>
+                                </label>
+                                <p class="uf-hint">POSTは新しいGASスクリプト（gas/Code.gs）をデプロイした後に選択してください。OAuth は不要です。</p>
                             </div>
                             <label class="uf-check"><input type="checkbox" id="uf-sync-auto-upload"> 変更時に自動アップロード</label>
                             <label class="uf-check"><input type="checkbox" id="uf-sync-auto-download"> 起動時・5分ごとに自動ダウンロード</label>
@@ -2231,6 +2254,7 @@
                                 <li>「アップロード」で Gist を作成または更新し、「ダウンロード」で取得します。</li>
                                 <li>トークン・共有キー・Gist ID・GAS URL は端末内にのみ保存され、エクスポートには含まれません。</li>
                                 <li>削除/CSS変更ルールを含むリモート設定は、自動ダウンロードでは適用しません。手動ダウンロードで確認して適用してください。</li>
+                                <li>GASの送信方式は、新しいGASスクリプト（gas/Code.gs）をデプロイしたら「POST（推奨）」に変更してください。GETは旧サーバ互換で、共有キーがURLに残ります。</li>
                                 <li>Gist は secret ですが、URL を知っている人は閲覧できます。</li>
                             </ul>
                             <h3>困ったとき</h3>
@@ -3522,6 +3546,8 @@
             if (uiRoot.activeElement !== gasUrlInput) gasUrlInput.value = state.sync.gasUrl;
             const gasKey = getGasKey();
             query('#uf-gas-key').placeholder = gasKey ? '保存済み（変更する場合のみ入力）' : '共有キー';
+            const gasTransport = query('#uf-gas-transport');
+            if (gasTransport) gasTransport.value = getGasTransport();
             updateSyncProviderFields();
             const status = query('#uf-sync-status');
             status.textContent = syncStatus || (state.sync.lastSyncAt

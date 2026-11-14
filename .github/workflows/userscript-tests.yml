@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'openFilter.js'
+      - 'gas/**'
       - 'tests/**'
       - 'package.json'
       - 'package-lock.json'
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'openFilter.js'
+      - 'gas/**'
       - 'tests/**'
       - 'package.json'
       - 'package-lock.json'

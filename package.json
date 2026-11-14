@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "description": "Open Filter userscript regression tests",
   "scripts": {
-    "test": "node tests/check-userscript.mjs && node tests/run.cjs && node tests/safety.cjs",
-    "test:check": "node tests/check-userscript.mjs",
+    "test": "node tests/check-userscript.mjs && node tests/check-gas.mjs && node tests/run.cjs && node tests/safety.cjs",
+    "test:check": "node tests/check-userscript.mjs && node tests/check-gas.mjs",
     "test:feature": "node tests/run.cjs",
     "test:safety": "node tests/safety.cjs"
   },
