@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.4.0
+// @version      3.5.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.4.0';
+    const VERSION = '3.5.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -42,6 +42,7 @@
     const MAX_RULES_PER_SITE = 500;
     const MAX_QUARANTINE = 100;
     const MAX_QUARANTINE_BYTES = 20000;
+    const MAX_PROTECTED_SITES = 100;
     const IS_TOP_FRAME = window.top === window.self;
     const RUNTIME_VERSION = (() => {
         try {
@@ -126,7 +127,7 @@
             version: SCHEMA_VERSION,
             globalEnabled: true,
             sites: Object.create(null),
-            ui: { showInFrames: false, hideTrigger: false },
+            ui: { showInFrames: false, hideTrigger: false, protectedSites: [] },
             sync: {
                 enabled: false,
                 provider: 'gist',
@@ -146,6 +147,9 @@
         if (raw.globalEnabled === false) out.globalEnabled = false;
         if (raw.ui && raw.ui.showInFrames === true) out.ui.showInFrames = true;
         if (raw.ui && raw.ui.hideTrigger === true) out.ui.hideTrigger = true;
+        if (raw.ui && Array.isArray(raw.ui.protectedSites)) {
+            out.ui.protectedSites = normalizeProtectedSites(raw.ui.protectedSites);
+        }
         if (raw.sync && typeof raw.sync === 'object') {
             out.sync.enabled = raw.sync.enabled === true;
             out.sync.provider = raw.sync.provider === 'gas' ? 'gas' : 'gist';
@@ -166,6 +170,57 @@
             }
         }
         return out;
+    }
+
+    function normalizeProtectedHost(value) {
+        let host = String(value || '').trim().toLowerCase();
+        if (!host || host.length > 253) return '';
+        const wildcard = host.startsWith('*.');
+        if (wildcard) host = host.slice(2);
+        if (!/^[a-z0-9.-]+(?::[0-9]{1,5})?$/.test(host)) return '';
+        if (host.startsWith('.') || host.endsWith('.') || host.includes('..')) return '';
+        return wildcard ? '*.' + host : host;
+    }
+
+    function normalizeProtectedSites(list) {
+        const out = [];
+        const seen = new Set();
+        for (const value of list) {
+            if (out.length >= MAX_PROTECTED_SITES) break;
+            const host = normalizeProtectedHost(value);
+            if (!host || seen.has(host)) continue;
+            seen.add(host);
+            out.push(host);
+        }
+        return out;
+    }
+
+    function hostMatchesProtectedPattern(host, pattern) {
+        if (!host || !pattern) return false;
+        const target = String(host).toLowerCase();
+        const rule = String(pattern).toLowerCase();
+        if (rule.startsWith('*.')) {
+            const suffix = rule.slice(1);
+            return target === rule.slice(2) || target.endsWith(suffix);
+        }
+        return target === rule;
+    }
+
+    function isCurrentHostProtected() {
+        const host = location.host;
+        const hostname = location.hostname;
+        if (!host && !hostname) return false;
+        const list = state.ui && Array.isArray(state.ui.protectedSites) ? state.ui.protectedSites : [];
+        return list.some((pattern) => hostMatchesProtectedPattern(host, pattern) ||
+            hostMatchesProtectedPattern(hostname, pattern));
+    }
+
+    function removeProtectedPatternsForCurrentHost() {
+        const host = location.host;
+        const hostname = location.hostname;
+        state.ui.protectedSites = state.ui.protectedSites.filter((pattern) => {
+            return !(hostMatchesProtectedPattern(host, pattern) || hostMatchesProtectedPattern(hostname, pattern));
+        });
     }
 
     function normalizeProfile(profile) {
@@ -697,7 +752,10 @@
             version: SCHEMA_VERSION,
             globalEnabled: state.globalEnabled,
             sites: state.sites,
-            ui: state.ui,
+            ui: {
+                showInFrames: state.ui.showInFrames,
+                hideTrigger: state.ui.hideTrigger
+            },
             sync: {
                 enabled: state.sync.enabled,
                 provider: getSyncProvider(),
@@ -886,6 +944,7 @@
                 }
             }
 
+            normalized.ui.protectedSites = state.ui.protectedSites.slice();
             normalized.sync = {
                 enabled: state.sync.enabled,
                 provider: provider,
@@ -1113,6 +1172,7 @@
 
     function getActiveRules() {
         if (!state.globalEnabled) return [];
+        if (isCurrentHostProtected()) return [];
         const profile = getProfile(false);
         if (!profile || !profile.enabled) return [];
         return profile.rules.filter((rule) => rule.enabled && rule.selector && pageMatches(rule));
@@ -1384,7 +1444,7 @@
     function refreshPageCss() {
         const lines = ['.' + HIDDEN_CLASS + '{display:none!important;}'];
         const profile = getProfile(false);
-        if (state.globalEnabled && profile && profile.enabled) {
+        if (state.globalEnabled && !isCurrentHostProtected() && profile && profile.enabled) {
             for (const rule of profile.rules) {
                 if (!rule.enabled) continue;
                 if (!rule.action || rule.action.type !== 'css') continue;
@@ -1999,6 +2059,11 @@
                             <p class="uf-muted">全サイト共通の設定です。非表示にしても、ユーザースクリプトメニューの「Open Filter 設定を開く」または <code>Alt+Shift+O</code> で設定を開けます。</p>
                         </div>
                         <div class="uf-card">
+                            <h3>保護</h3>
+                            <label class="uf-check"><input type="checkbox" id="uf-site-protected"> このサイトを保護する（フィルタを適用しない）</label>
+                            <p class="uf-muted" id="uf-site-protected-note">保護中はフィルタを適用せず、歯車ボタンも非表示にします。このページの内容から新しいルールを作る操作も無効になります。保護はホスト単位で保存されます。</p>
+                        </div>
+                        <div class="uf-card">
                             <h3>ページ</h3>
                             <label class="uf-check"><input type="checkbox" id="uf-here-only"> 現在のページのルールだけ表示</label>
                             <p class="uf-muted">現在のパス: <code id="uf-site-path"></code></p>
@@ -2086,6 +2151,7 @@
                                 <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。</li>
                                 <li>不正なルールは削除せず「復旧待ち」として保持します。エクスポートには含まれるため、修正して再インポートできます。</li>
                                 <li>ルール削除・サイト削除・インポート・全削除の直前状態は自動バックアップされます。ユーザースクリプトメニューの「直前のバックアップから復元」で戻せます（トークン/共有キーは対象外）。</li>
+                                <li>金融・医療・管理画面などは「サイト」タブの「保護」でフィルタを停止できます。保護中は歯車ボタンも非表示になり、このページから新しいルールを作る操作も無効になります。保護サイトの一覧は同期・エクスポートに含まれません。</li>
                                 <li>SPAのURL変更にも追従します。</li>
                             </ul>
                             <h3>クラウド同期</h3>
@@ -2285,7 +2351,31 @@
         if (!uiRoot) return;
         const trigger = uiRoot.querySelector('#uf-trigger');
         if (!trigger) return;
-        trigger.hidden = state.ui.hideTrigger === true;
+        trigger.hidden = state.ui.hideTrigger === true || isCurrentHostProtected();
+    }
+
+    function toggleSiteProtection() {
+        const host = location.host;
+        if (!host) return;
+        const pattern = host.toLowerCase();
+        const currentlyProtected = isCurrentHostProtected();
+        if (!currentlyProtected && state.ui.protectedSites.length >= MAX_PROTECTED_SITES) {
+            alert('Open Filter: 保護サイトの登録数が上限に達しています。');
+            return;
+        }
+        const changed = runStateChange(() => {
+            if (currentlyProtected) {
+                removeProtectedPatternsForCurrentHost();
+            } else if (!state.ui.protectedSites.includes(pattern)) {
+                state.ui.protectedSites.push(pattern);
+            }
+        });
+        if (!changed) return;
+        applyTriggerVisibility();
+        if (uiRoot) renderAll();
+        alert(currentlyProtected
+            ? 'Open Filter: このサイトの保護を解除しました。'
+            : 'Open Filter: このサイトを保護しました。フィルタは適用されません。');
     }
 
     function toggleTriggerVisibility() {
@@ -2403,6 +2493,23 @@
             runStateChange(() => {
                 state.ui.hideTrigger = event.target.checked;
             }, { refreshCss: false, apply: false, sync: false, render: false });
+            applyTriggerVisibility();
+            if (uiRoot) renderSiteTab();
+        });
+        query('#uf-site-protected').addEventListener('change', (event) => {
+            if (!event.isTrusted) return;
+            const host = location.host;
+            if (!host) return;
+            runStateChange(() => {
+                if (event.target.checked) {
+                    const pattern = host.toLowerCase();
+                    if (!state.ui.protectedSites.includes(pattern)) {
+                        if (state.ui.protectedSites.length < MAX_PROTECTED_SITES) state.ui.protectedSites.push(pattern);
+                    }
+                } else {
+                    removeProtectedPatternsForCurrentHost();
+                }
+            });
             applyTriggerVisibility();
             if (uiRoot) renderSiteTab();
         });
@@ -2584,10 +2691,12 @@
     function renderSiteBar() {
         const element = uiRoot.querySelector('#uf-sitebar');
         const profile = getProfile(false);
+        const protectedHost = isCurrentHostProtected();
         const enabled = state.globalEnabled && profile && profile.enabled;
         const count = profile ? profile.rules.length : 0;
         const blocked = storageBlocked ? ' — 保存停止中' : '';
-        element.textContent = `${location.host}${location.pathname} — ${enabled ? '有効' : '無効'} / ルール ${count} 件${blocked}`;
+        const stateText = protectedHost ? '保護中' : (enabled ? '有効' : '無効');
+        element.textContent = `${location.host}${location.pathname} — ${stateText} / ルール ${count} 件${blocked}`;
         uiRoot.querySelector('#uf-host').textContent = location.host;
     }
 
@@ -2727,6 +2836,10 @@
     // ------------------------------------------------------------------
 
     function showForm(rule) {
+        if (!rule && isCurrentHostProtected()) {
+            alert('Open Filter: 保護中のサイトでは新しいルールを作成できません。先に保護を解除してください。');
+            return;
+        }
         editingId = rule ? rule.id : null;
         const query = (selector) => uiRoot.querySelector(selector);
 
@@ -2905,6 +3018,10 @@
 
     function onSave() {
         try {
+            if (!editingId && isCurrentHostProtected()) {
+                alert('Open Filter: 保護中のサイトでは新しいルールを作成できません。先に保護を解除してください。');
+                return;
+            }
             const rule = readForm();
             const profile = getProfile(true);
             const editing = editingId;
@@ -3156,6 +3273,10 @@
     }
 
     function pickTarget() {
+        if (isCurrentHostProtected()) {
+            alert('Open Filter: 保護中のサイトでは要素を選択できません。先に保護を解除してください。');
+            return;
+        }
         startPicker((element) => {
             const selector = buildSelector(element);
             uiRoot.querySelector('#uf-f-selector').value = selector;
@@ -3170,6 +3291,10 @@
     }
 
     function pickProbe() {
+        if (isCurrentHostProtected()) {
+            alert('Open Filter: 保護中のサイトでは要素を選択できません。先に保護を解除してください。');
+            return;
+        }
         const targetSelector = uiRoot.querySelector('#uf-f-selector').value.trim();
         if (!targetSelector) {
             showFormError('先に対象セレクタを指定してください。');
@@ -3212,9 +3337,21 @@
         const query = (selector) => uiRoot.querySelector(selector);
         const profile = getProfile(false);
         query('#uf-site-host').textContent = location.host;
+        const protectedHost = isCurrentHostProtected();
         query('#uf-site-enabled').checked = profile ? profile.enabled : false;
+        query('#uf-site-protected').checked = protectedHost;
         query('#uf-show-frames').checked = state.ui.showInFrames;
         query('#uf-hide-trigger').checked = state.ui.hideTrigger === true;
+        const protectedNote = query('#uf-site-protected-note');
+        if (protectedNote) {
+            const matched = (state.ui.protectedSites || []).filter((pattern) => {
+                return hostMatchesProtectedPattern(location.host, pattern) ||
+                    hostMatchesProtectedPattern(location.hostname, pattern);
+            });
+            protectedNote.textContent = matched.length
+                ? `保護中です（${matched.join(', ')}）。フィルタは適用されません。解除するにはチェックを外してください。`
+                : '保護中はフィルタを適用せず、歯車ボタンも非表示にします。このページの内容から新しいルールを作る操作も無効になります。保護はホスト単位で保存されます。';
+        }
         query('#uf-site-path').textContent = location.pathname;
         const count = profile ? profile.rules.length : 0;
         const active = profile ? profile.rules.filter((rule) => rule.enabled && pageMatches(rule)).length : 0;
@@ -3274,6 +3411,10 @@
 
     function buildExportState() {
         const exported = JSON.parse(JSON.stringify(state));
+        if (exported.ui) {
+            // 保護サイトの一覧は閲覧先の傾向を含むため共有用エクスポートには含めない
+            exported.ui.protectedSites = [];
+        }
         if (exported.sync) {
             // Gist ID / GAS URL は秘密に近い識別子のため共有用エクスポートには含めない
             exported.sync.gistId = '';
@@ -3369,6 +3510,8 @@
             const imported = normalizeState(data);
             // 同期設定はローカルのものを保持する（インポート経由の外部送信・設定ハイジャックを防ぐ）
             imported.sync = Object.assign({}, state.sync);
+            // 保護サイトの一覧は端末ごとの安全設定としてローカルを保持する
+            imported.ui.protectedSites = state.ui.protectedSites.slice();
             const counts = countImported(imported);
             const quarantineNote = counts.quarantined
                 ? `\n不正なルール ${counts.quarantined} 件は復旧待ちとして保持します。`
@@ -3524,6 +3667,7 @@
                 GM_registerMenuCommand('Open Filter 設定を開く', openPanel);
                 GM_registerMenuCommand('歯車ボタン（⚙）の表示を切り替える', toggleTriggerVisibility);
                 GM_registerMenuCommand('直前のバックアップから復元', restoreLatestBackup);
+                GM_registerMenuCommand('このサイトの保護を切り替える', toggleSiteProtection);
             }
         } catch (error) {
             // 未対応環境では何もしない
