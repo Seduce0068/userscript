@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.3.0
+// @version      3.4.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.3.0';
+    const VERSION = '3.4.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -1359,6 +1359,10 @@
     const stats = { hidden: 0, styled: 0, removed: 0, capped: false };
     const appliedElements = new Set();
     const savedHideDisplay = new WeakMap();
+    const selfMutationAt = new WeakMap();
+    let dynamicTimer = 0;
+    let lastDynamicApply = 0;
+    let dynamicPending = false;
     let pageStyleEl = null;
     let pageSheet = null;
     let lastPageCss = '';
@@ -1431,6 +1435,7 @@
     function cleanupApplied() {
         for (const element of appliedElements) {
             if (!element || !element.isConnected) continue;
+            selfMutationAt.set(element, Date.now());
             element.classList.remove(HIDDEN_CLASS);
             if (savedHideDisplay.has(element)) {
                 const saved = savedHideDisplay.get(element);
@@ -1487,6 +1492,7 @@
                         priority: element.style.getPropertyPriority('display')
                     });
                 }
+                selfMutationAt.set(element, Date.now());
                 element.classList.add(HIDDEN_CLASS);
                 // ページ側の display:block!important に負けないよう inline !important を併用する
                 element.style.setProperty('display', 'none', 'important');
@@ -1494,6 +1500,7 @@
             } else if (rule.action.type === 'css') {
                 const className = cssClassFor(rule.id);
                 if (!element.classList.contains(className)) {
+                    selfMutationAt.set(element, Date.now());
                     element.classList.add(className);
                     stats.styled++;
                 }
@@ -1598,6 +1605,67 @@
         }
     }
 
+    function collectSelectorAttributes(selector, target) {
+        const regex = /\[\s*([a-zA-Z_][\w:-]*)/g;
+        let match;
+        while ((match = regex.exec(String(selector || '')))) {
+            target.add(match[1].toLowerCase());
+        }
+    }
+
+    function buildObservationOptions(rules) {
+        const attributeFilter = new Set([
+            'class', 'id', 'href', 'src', 'alt', 'title', 'hidden', 'checked',
+            'selected', 'disabled', 'open', 'aria-label', 'aria-expanded', 'aria-hidden'
+        ]);
+        let characterData = false;
+        for (const rule of rules) {
+            collectSelectorAttributes(rule.selector, attributeFilter);
+            if (rule.probe) {
+                collectSelectorAttributes(rule.probe.selector, attributeFilter);
+                if (rule.probe.type === 'attr' && rule.probe.attr) {
+                    attributeFilter.add(String(rule.probe.attr).toLowerCase());
+                }
+                if (rule.probe.type === 'text') characterData = true;
+            }
+        }
+        const options = { childList: true, subtree: true };
+        if (attributeFilter.size) {
+            options.attributes = true;
+            options.attributeFilter = Array.from(attributeFilter);
+        }
+        if (characterData) options.characterData = true;
+        return options;
+    }
+
+    function isSelfMutation(mutation) {
+        const target = mutation.target;
+        if (!target || target.nodeType !== 1) return false;
+        if (target.id === HOST_ID || target.id === PICKER_ID) return true;
+        if (target.closest && (target.closest('#' + HOST_ID) || target.closest('#' + PICKER_ID))) return true;
+        if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
+            const at = selfMutationAt.get(target);
+            if (at && Date.now() - at < 1500) return true;
+        }
+        return false;
+    }
+
+    function scheduleDynamicApply() {
+        if (dynamicTimer) return;
+        const elapsed = Date.now() - lastDynamicApply;
+        const delay = Math.max(300, 1000 - elapsed);
+        dynamicTimer = setTimeout(() => {
+            dynamicTimer = 0;
+            if (document.hidden) {
+                dynamicPending = true;
+                return;
+            }
+            if (!getActiveRules().length) return;
+            lastDynamicApply = Date.now();
+            applyAll();
+        }, delay);
+    }
+
     function onMutations(mutations) {
         ensureUiHost();
         const sheetMissing = pageSheet && 'adoptedStyleSheets' in document &&
@@ -1608,17 +1676,37 @@
         if (!rules.length) return;
         const combined = buildCombinedSelector(rules);
         if (!combined) return;
+        const hasTextRules = rules.some((rule) => rule.probe && rule.probe.type === 'text');
+        const hasCountRules = rules.some((rule) => rule.match && rule.match.type === 'count');
 
         const nodes = [];
+        let dynamicChanged = false;
         for (const mutation of mutations) {
-            if (mutation.type !== 'childList') continue;
-            for (const node of mutation.addedNodes) {
-                if (node.nodeType !== 1) continue;
-                if (node.id === HOST_ID || node.id === PICKER_ID) continue;
-                if (node.closest && (node.closest('#' + HOST_ID) || node.closest('#' + PICKER_ID))) continue;
-                nodes.push(node);
+            if (mutation.type === 'childList') {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    if (node.id === HOST_ID || node.id === PICKER_ID) continue;
+                    if (node.closest && (node.closest('#' + HOST_ID) || node.closest('#' + PICKER_ID))) continue;
+                    nodes.push(node);
+                }
+                if (hasTextRules) {
+                    const textChanged = Array.from(mutation.addedNodes).some((node) => node.nodeType === 3) ||
+                        Array.from(mutation.removedNodes).some((node) => node.nodeType === 3);
+                    if (textChanged) dynamicChanged = true;
+                }
+                if (hasCountRules && (mutation.addedNodes.length || mutation.removedNodes.length)) {
+                    dynamicChanged = true;
+                }
+                continue;
+            }
+            if (mutation.type === 'attributes') {
+                if (isSelfMutation(mutation)) continue;
+                dynamicChanged = true;
+            } else if (mutation.type === 'characterData') {
+                dynamicChanged = true;
             }
         }
+        if (dynamicChanged) scheduleDynamicApply();
         if (nodes.length) scheduleApplyNodes(nodes);
     }
 
@@ -1643,7 +1731,7 @@
         }
         if (!observer) observer = new MutationObserver(onMutations);
         observer.disconnect();
-        observer.observe(document.documentElement, { childList: true, subtree: true });
+        observer.observe(document.documentElement, buildObservationOptions(rules));
     }
 
     // ------------------------------------------------------------------
@@ -1997,7 +2085,7 @@
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
                                 <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。</li>
                                 <li>不正なルールは削除せず「復旧待ち」として保持します。エクスポートには含まれるため、修正して再インポートできます。</li>
-                                <li>削除・インポート・全削除の直前状態は自動バックアップされます。ユーザースクリプトメニューの「直前のバックアップから復元」で戻せます（トークン/共有キーは対象外）。</li>
+                                <li>ルール削除・サイト削除・インポート・全削除の直前状態は自動バックアップされます。ユーザースクリプトメニューの「直前のバックアップから復元」で戻せます（トークン/共有キーは対象外）。</li>
                                 <li>SPAのURL変更にも追従します。</li>
                             </ul>
                             <h3>クラウド同期</h3>
@@ -2841,8 +2929,7 @@
         if (!editingId) return;
         if (!(await confirmAction('このルールを削除しますか？', { danger: true, okLabel: '削除' }))) return;
         const id = editingId;
-        hideForm();
-        removeRule(id);
+        if (removeRule(id)) hideForm();
     }
 
     function onPreview() {
@@ -2872,17 +2959,26 @@
 
     function removeRule(id) {
         const profile = getProfile(false);
-        if (!profile) return;
-        runStateChange(() => {
+        if (!profile) return false;
+        if (!createBackup('ルール削除')) {
+            alert('Open Filter: バックアップに失敗したため、ルール削除を中止しました。');
+            return false;
+        }
+        return runStateChange(() => {
             profile.rules = profile.rules.filter((rule) => rule.id !== id);
         });
     }
 
     function deleteSite() {
-        runStateChange(() => {
+        if (!createBackup('サイト削除')) {
+            alert('Open Filter: バックアップに失敗したため、サイト設定の削除を中止しました。');
+            return false;
+        }
+        const changed = runStateChange(() => {
             delete state.sites[location.host];
         });
-        hideForm();
+        if (changed) hideForm();
+        return changed;
     }
 
     function showFormError(message) {
@@ -3491,6 +3587,11 @@
         } catch (error) {
             console.warn('[Open Filter] history のフックに失敗しました', error);
         }
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden || !dynamicPending) return;
+            dynamicPending = false;
+            if (getActiveRules().length) applyAll();
+        });
         watchStorage();
         initSync();
         if (loadedCorrupt) notifyCorruptOnce();
