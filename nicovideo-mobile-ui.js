@@ -2,8 +2,8 @@
 // @name         ニコニコ動画 PC版URL スマホUI化
 // @namespace    nicovideo-mobile-ui
 // @version      1.3.2
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/nicovideo-mobile-ui.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/nicovideo-mobile-ui.js
+// @updateURL    https://github.com/Seduce0068/userscript/raw/master/nicovideo-mobile-ui.js
+// @downloadURL  https://github.com/Seduce0068/userscript/raw/master/nicovideo-mobile-ui.js
 // @description  PC版URL(www.nicovideo.jp)をスマホで開いたとき、幅約1240px前提のPC版レイアウトをスマホ向けUIに再構成する。
 // @author       opencode
 // @match        https://www.nicovideo.jp/*
