@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Video Swipe Blocker (Browser/PWA)
-// @namespace    https://github.com/onoderakeita
+// @namespace    https://github.com/Seduce0068
 // @version      1.0.0
 // @description  X（Twitter）で動画を開いたあと、スワイプで別の動画へ次々と遷移するのを防止する。動画ビューアのURL固定（別ポストの動画への遷移を遮断）と、動画上での縦スワイプ／ホイール／矢印キーの遮断の二層構造。
 // @author       Koppe + Muse
@@ -8,8 +8,8 @@
 // @grant        none
 // @run-at       document-start
 // @noframes
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/x-video-swipe-blocker.user.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/x-video-swipe-blocker.user.js
+// @updateURL    https://github.com/Seduce0068/userscript/raw/master/x-video-swipe-blocker.user.js
+// @downloadURL  https://github.com/Seduce0068/userscript/raw/master/x-video-swipe-blocker.user.js
 // ==/UserScript==
 
 (function () {
