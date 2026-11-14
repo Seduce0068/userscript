@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         NicoNico Shorts Blocker (Browser/PWA)
-// @namespace    https://github.com/onoderakeita
+// @namespace    https://github.com/Seduce0068
 // @version      1.0.0
 // @description  ニコニコショートの専用プレーヤーに入らないようにする。/shorts/<id> を通常の視聴ページ /watch/<id> に置換し、無限スワイプ視聴を成立させない。
 // @author       Koppe + Muse
@@ -8,8 +8,8 @@
 // @grant        none
 // @run-at       document-start
 // @noframes
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/nicovideo-shorts-blocker.user.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/nicovideo-shorts-blocker.user.js
+// @updateURL    https://github.com/Seduce0068/userscript/raw/master/nicovideo-shorts-blocker.user.js
+// @downloadURL  https://github.com/Seduce0068/userscript/raw/master/nicovideo-shorts-blocker.user.js
 // ==/UserScript==
 
 (function () {
