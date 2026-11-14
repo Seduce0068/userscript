@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.8.0
+// @version      3.8.1
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.8.0';
+    const VERSION = '3.8.1';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -2634,14 +2634,20 @@
     let panelLastFocus = null;
 
     function confirmAction(message, options = {}) {
-        if (!uiRoot) return Promise.resolve(window.confirm(message));
+        if (!uiRoot) {
+            // 確認UIが使えない環境で window.confirm にフォールバックすると
+            // ページ側の上書きで確認を回避され得るため、操作を中止する
+            console.warn('[Open Filter] 確認UIを表示できないため操作を中止しました: ' + message);
+            return Promise.resolve(false);
+        }
         if (confirmResolver) return Promise.resolve(false);
         const overlay = uiRoot.querySelector('#uf-confirm');
         const text = uiRoot.querySelector('#uf-confirm-message');
         const ok = uiRoot.querySelector('#uf-confirm-ok');
         const cancel = uiRoot.querySelector('#uf-confirm-cancel');
         if (!overlay || !text || !ok || !cancel) {
-            return Promise.resolve(window.confirm(message));
+            console.warn('[Open Filter] 確認UIの要素が見つからないため操作を中止しました: ' + message);
+            return Promise.resolve(false);
         }
         confirmLastFocus = uiRoot.activeElement || document.activeElement;
         text.textContent = String(message || '');

@@ -443,6 +443,23 @@ async function runChromium(browser) {
     check('Trusted Types: UIなしでもフィルタとメニューは動作する', state.hasUi === false && state.adDisplay === 'none' && state.menu.length === 4, JSON.stringify(state));
     await scenario.context.close();
   }
+  {
+    const current = seedState([rule('.ad', 'r_current')]);
+    const backupState = seedState([rule('.ad', 'r_backup')]);
+    const backup = JSON.stringify({ at: '2026-01-01T00:00:00.000Z', reason: 'テスト', state: backupState });
+    const scenario = await openScenario(browser, 'tt', current, {
+      store: { open_filter_state_v3: JSON.stringify(current), open_filter_backup_latest: backup },
+      wait: 900
+    });
+    await scenario.page.evaluate(() => { window.confirm = () => true; window.alert = () => {}; });
+    await scenario.page.evaluate(() => { void window.__ofMenu['直前のバックアップから復元'](); });
+    await scenario.page.waitForTimeout(500);
+    const stored = await readStore(scenario.page);
+    const rules = stored.state.sites[HOST].rules.map((r) => r.id);
+    info('confirm: UIなし環境での復元試行', JSON.stringify(rules));
+    check('confirm: UIが使えない環境では確認なしに復元しない', rules.includes('r_current') && !rules.includes('r_backup'), JSON.stringify(rules));
+    await scenario.context.close();
+  }
 
   // 10) ページによる confirm 上書きへの耐性とフォーカストラップ
   {
