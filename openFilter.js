@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.5.0
+// @version      3.6.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.5.0';
+    const VERSION = '3.6.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -294,6 +294,7 @@
         const actionCss = String(action.css || '');
         if (actionCss.length > 4000) return null;
         if (actionType === 'css' && (actionCss.includes('{') || actionCss.includes('}'))) return null;
+        if (actionType === 'css' && /\burl\s*\(|@import|expression\s*\(/i.test(actionCss)) return null;
         const probeType = ['none', 'text', 'attr'].includes(probe.type) ? probe.type : 'none';
         const matchType = ['contains', 'regex', 'count'].includes(match.type) ? match.type : 'contains';
         return {
@@ -768,11 +769,61 @@
         };
     }
 
-    async function syncUpload() {
+    async function fetchRemotePayload() {
+        const provider = getSyncProvider();
+        if (provider === 'gas') {
+            return gasRequest('GET');
+        }
+        const token = getSyncToken();
+        const gistId = normalizeGistId(state.sync.gistId);
+        if (!gistId) throw new Error('Gist ID が設定されていません。');
+        const gist = await githubRequest('GET', 'https://api.github.com/gists/' + encodeURIComponent(gistId), null, token);
+        const file = gist.files && gist.files['open-filter.json'];
+        if (!file) throw new Error('Gist に open-filter.json がありません。');
+        let content = file.content;
+        if (file.truncated && file.raw_url) {
+            if (!isValidGistRawUrl(file.raw_url)) {
+                throw new Error('Gist の raw URL が不正なため取得を中止しました。');
+            }
+            content = await githubRequestText(file.raw_url, token);
+        }
+        try {
+            return JSON.parse(content);
+        } catch (error) {
+            throw new Error('同期データの JSON が不正です。');
+        }
+    }
+
+    function hasRemoteConflict(remote) {
+        if (!remote || typeof remote !== 'object') return false;
+        if (!remote.sites || typeof remote.sites !== 'object') return false;
+        const remoteSyncedAt = typeof remote.syncedAt === 'string' ? remote.syncedAt : '';
+        if (!state.sync.lastSyncAt) return true;
+        if (!remoteSyncedAt) return true;
+        return remoteSyncedAt > state.sync.lastSyncAt;
+    }
+
+    async function checkRemoteConflict() {
+        const provider = getSyncProvider();
+        if (provider === 'gist' && !normalizeGistId(state.sync.gistId)) return null;
+        let remote;
+        try {
+            remote = await fetchRemotePayload();
+        } catch (error) {
+            // リモートにファイルがまだない場合は競合なしとして新規アップロードを許可する
+            if (/open-filter\.json/.test(String(error && error.message))) return null;
+            throw error;
+        }
+        if (!hasRemoteConflict(remote)) return null;
+        return { remoteSyncedAt: typeof remote.syncedAt === 'string' ? remote.syncedAt : '' };
+    }
+
+    async function syncUpload(options = {}) {
         if (typeof GM_xmlhttpRequest !== 'function') {
             throw new Error('GM_xmlhttpRequest が利用できません。');
         }
         if (syncBusy) throw new Error('別の同期処理が実行中です。');
+        const force = options.force === true;
         if (storageBlocked) {
             throw new Error('設定の保存が停止中のため、アップロードを中止しました。');
         }
@@ -790,6 +841,12 @@
 
         syncBusy = true;
         try {
+            if (!force) {
+                const conflict = await checkRemoteConflict();
+                if (conflict) {
+                    return { conflict: true, remoteSyncedAt: conflict.remoteSyncedAt };
+                }
+            }
             const syncedAt = new Date().toISOString();
             const payload = buildSyncPayload(syncedAt);
             const content = JSON.stringify(payload, null, 2);
@@ -880,33 +937,7 @@
 
         syncBusy = true;
         try {
-            let data;
-            if (provider === 'gas') {
-                data = await gasRequest('GET');
-            } else {
-                const token = getSyncToken();
-                const gistId = state.sync.gistId;
-                const gist = await githubRequest(
-                    'GET',
-                    'https://api.github.com/gists/' + encodeURIComponent(gistId),
-                    null,
-                    token
-                );
-                const file = gist.files && gist.files['open-filter.json'];
-                if (!file) throw new Error('Gist に open-filter.json がありません。');
-                let content = file.content;
-                if (file.truncated && file.raw_url) {
-                    if (!isValidGistRawUrl(file.raw_url)) {
-                        throw new Error('Gist の raw URL が不正なため取得を中止しました。');
-                    }
-                    content = await githubRequestText(file.raw_url, token);
-                }
-                try {
-                    data = JSON.parse(content);
-                } catch (error) {
-                    throw new Error('同期データの JSON が不正です。');
-                }
-            }
+            const data = await fetchRemotePayload();
             const validationError = validateRemoteState(data);
             if (validationError) {
                 throw new Error(validationError);
@@ -988,7 +1019,11 @@
         if (!state.sync.enabled || !state.sync.autoUpload) return;
         if (!syncReady()) return;
         try {
-            await syncUpload();
+            const result = await syncUpload();
+            if (result && result.conflict) {
+                setSyncStatus('同期競合: リモートに新しい変更があります。手動でアップロードまたはダウンロードしてください。', true);
+                return;
+            }
             setSyncStatus('自動アップロード完了');
         } catch (error) {
             setSyncStatus('自動アップロード失敗: ' + error.message, true);
@@ -1131,7 +1166,18 @@
         if (syncBusy) return;
         setSyncStatus('アップロード中...');
         try {
-            const result = await syncUpload();
+            let result = await syncUpload();
+            if (result && result.conflict) {
+                const overwrite = await confirmAction(
+                    'リモートに新しい変更があります。ローカルの内容で上書きしますか？\n（先にダウンロードするとリモートの変更を取り込めます）',
+                    { danger: true, okLabel: '上書き' }
+                );
+                if (!overwrite) {
+                    setSyncStatus('アップロードをキャンセルしました');
+                    return;
+                }
+                result = await syncUpload({ force: true });
+            }
             setSyncStatus('アップロード完了: ' + formatDateTime(result.at));
             renderDataTab();
         } catch (error) {
@@ -2146,7 +2192,7 @@
                                 <li>設定はホスト名ごとに保存されます。「適用パス」を指定すると、特定のページだけでルールを有効にできます。</li>
                                 <li>「判定対象」は対象要素の子孫から選びます。空の場合は対象要素全体のテキストを使います。</li>
                                 <li>属性値で判定する場合は、属性名（例: <code>href</code>, <code>data-tag</code>）を指定します。</li>
-                                <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。</li>
+                                <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。外部リクエストを防ぐため <code>url()</code> / <code>@import</code> / <code>expression()</code> は使用できません。</li>
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
                                 <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。</li>
                                 <li>不正なルールは削除せず「復旧待ち」として保持します。エクスポートには含まれるため、修正して再インポートできます。</li>
@@ -2979,6 +3025,9 @@
             if (!css) throw new Error('CSSを入力してください。');
             if (css.includes('{') || css.includes('}')) {
                 throw new Error('CSSに波括弧は使用できません。宣言のみ指定してください。');
+            }
+            if (/\burl\s*\(|@import|expression\s*\(/i.test(css)) {
+                throw new Error('CSSに url() / @import / expression() は使用できません。');
             }
             if (css.length > 4000) throw new Error('CSSが長すぎます。');
         }
