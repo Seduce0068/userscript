@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.6.0
+// @version      3.7.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.6.0';
+    const VERSION = '3.7.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -935,6 +935,7 @@
             }
         }
 
+        const startedSnapshot = snapshotState();
         syncBusy = true;
         try {
             const data = await fetchRemotePayload();
@@ -971,6 +972,14 @@
                     'リモート設定に削除/CSS変更ルールが ' + destructiveCount + ' 件含まれています。適用しますか？\n適用前に現在の設定を自動バックアップします。',
                     { danger: true, okLabel: '適用' }
                 ))) {
+                    return { canceled: true };
+                }
+            }
+
+            if (snapshotState() !== startedSnapshot) {
+                // ダウンロード中にローカル設定が変わった場合は、黙って上書きしない
+                if (silent) return { skipped: true, reason: 'changed-during-download' };
+                if (!(await confirmAction('ダウンロード中にローカル設定が変更されました。リモートの内容で上書きしますか？', { danger: true, okLabel: '上書き' }))) {
                     return { canceled: true };
                 }
             }
@@ -1053,6 +1062,8 @@
                     setSyncStatus('リモートの変更を適用しました');
                 } else if (result && result.skipped && result.reason === 'destructive') {
                     setSyncStatus('削除/CSS変更ルールを含むリモート設定のため自動適用をスキップしました。', true);
+                } else if (result && result.skipped && result.reason === 'changed-during-download') {
+                    setSyncStatus('ダウンロード中にローカル設定が変更されたため自動適用をスキップしました。', true);
                 }
             } catch (error) {
                 setSyncStatus('定期同期に失敗: ' + error.message, true);
@@ -1092,6 +1103,8 @@
                         setSyncStatus('空のリモート設定をスキップしました');
                     } else if (result && result.skipped && result.reason === 'destructive') {
                         setSyncStatus('削除/CSS変更ルールを含むリモート設定のため自動適用をスキップしました。手動でダウンロードしてください。', true);
+                    } else if (result && result.skipped && result.reason === 'changed-during-download') {
+                        setSyncStatus('ダウンロード中にローカル設定が変更されたため自動適用をスキップしました。', true);
                     } else if (result && result.skipped && result.reason !== 'up-to-date') {
                         setSyncStatus('自動ダウンロードをスキップしました', true);
                     }
@@ -1198,6 +1211,12 @@
                 renderAll();
             } else if (result && result.canceled) {
                 setSyncStatus('ダウンロードをキャンセルしました');
+            } else if (result && result.skipped) {
+                if (result.reason === 'changed-during-download') {
+                    setSyncStatus('ダウンロード中にローカル設定が変更されたため中止しました', true);
+                } else {
+                    setSyncStatus('リモートに新しい変更はありません');
+                }
             } else {
                 setSyncStatus('リモートに新しい変更はありません');
             }
