@@ -258,7 +258,7 @@ async function runChromium(browser) {
       };
     });
     info('CSP: UIとhideの適用結果', JSON.stringify(state));
-    check('CSP: shadow root のCSSが adoptedStyleSheets で適用される', state.triggerDisplay === 'flex' && state.triggerBackground === 'rgb(0, 122, 255)', JSON.stringify(state));
+    check('CSP: shadow root のCSSが adoptedStyleSheets で適用される', state.triggerDisplay === 'flex' && state.triggerBackground === 'rgb(0, 102, 204)', JSON.stringify(state));
     check('CSP: ページ側の hide が adoptedStyleSheets で適用される', state.adDisplay === 'none', JSON.stringify(state));
     await scenario.context.close();
   }
@@ -499,6 +499,69 @@ async function runChromium(browser) {
     check('a11y: 開いた直後にパネルへフォーカスが移る', initialFocus.inPanel === true, JSON.stringify(initialFocus));
     check('a11y: Tabがパネル内にトラップされる', trapped === true, JSON.stringify({ trapped }));
     check('a11y: lang/color-scheme/aria-selected/aria-live/alertdialog が設定される', a11y.lang === 'ja' && a11y.colorScheme !== 'normal' && a11y.ariaSelected === 'true' && a11y.hasLive === true && a11y.confirmRole === 'alertdialog', JSON.stringify(a11y));
+
+    const contrast = await scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      const root = host.shadowRoot;
+      const parse = (value) => (String(value).match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      const lum = (rgb) => {
+        const channels = rgb.map((value) => value / 255).map((value) => value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4));
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+      };
+      const ratio = (a, b) => {
+        const la = lum(a);
+        const lb = lum(b);
+        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+      };
+      const panel = root.querySelector('.uf-panel');
+      const muted = root.querySelector('.uf-muted');
+      const primary = root.querySelector('.uf-btn-primary');
+      const activeTab = root.querySelector('.uf-tab.is-active');
+      const panelBg = parse(getComputedStyle(panel).backgroundColor);
+      return {
+        muted: ratio(parse(getComputedStyle(muted).color), panelBg).toFixed(2),
+        primary: ratio(parse(getComputedStyle(primary).color), parse(getComputedStyle(primary).backgroundColor)).toFixed(2),
+        tab: ratio(parse(getComputedStyle(activeTab).color), panelBg).toFixed(2)
+      };
+    });
+    info('a11y: コントラスト比', JSON.stringify(contrast));
+    check('a11y: 主要テキストのコントラストが4.5:1以上', Number(contrast.muted) >= 4.5 && Number(contrast.primary) >= 4.5 && Number(contrast.tab) >= 4.5, JSON.stringify(contrast));
+
+    await scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      host.shadowRoot.querySelector('.uf-tab[data-tab="rules"]').focus();
+    });
+    await scenario.page.keyboard.press('ArrowRight');
+    await scenario.page.waitForTimeout(200);
+    const tabState = await scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      const root = host.shadowRoot;
+      return {
+        selected: root.querySelector('.uf-tab[data-tab="site"]').getAttribute('aria-selected'),
+        siteHidden: root.querySelector('#uf-tab-site').hidden,
+        focused: root.activeElement ? root.activeElement.getAttribute('data-tab') : null
+      };
+    });
+    info('a11y: タブの矢印キー移動', JSON.stringify(tabState));
+    check('a11y: タブを矢印キーで移動できる', tabState.selected === 'true' && tabState.siteHidden === false && tabState.focused === 'site', JSON.stringify(tabState));
+
+    await clickShadow(scenario.page, '.uf-tab[data-tab="rules"]');
+    await clickShadow(scenario.page, '#uf-add');
+    await clickShadow(scenario.page, '#uf-pick-target');
+    await scenario.page.keyboard.press('ArrowRight');
+    await scenario.page.keyboard.press('ArrowDown');
+    await scenario.page.keyboard.press('Enter');
+    await scenario.page.waitForTimeout(400);
+    const pickerResult = await scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      return {
+        pickerExists: Boolean(document.getElementById('open-filter-picker')),
+        selector: host.shadowRoot.querySelector('#uf-f-selector').value
+      };
+    });
+    info('a11y: ピッカーのキーボード操作', JSON.stringify(pickerResult));
+    check('a11y: ピッカーを矢印キーとEnterで操作できる', pickerResult.pickerExists === false && pickerResult.selector.length > 0, JSON.stringify(pickerResult));
+
     await scenario.context.close();
   }
 

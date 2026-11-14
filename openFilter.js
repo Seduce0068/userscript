@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.7.0
+// @version      3.8.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.7.0';
+    const VERSION = '3.8.0';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -1874,7 +1874,7 @@
             bottom: calc(16px + env(safe-area-inset-bottom, 0px));
             z-index: 2147483646;
             width: 52px; height: 52px; border-radius: 50%;
-            background: #007aff; color: #fff;
+            background: #0066cc; color: #fff;
             display: flex; align-items: center; justify-content: center;
             font: 600 22px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
             cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.24);
@@ -1885,7 +1885,7 @@
         #uf-trigger:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
         #uf-badge {
             position: absolute; top: -2px; right: -2px; min-width: 18px; height: 18px;
-            padding: 0 5px; border-radius: 9px; background: #ff3b30; color: #fff;
+            padding: 0 5px; border-radius: 9px; background: #d70015; color: #fff;
             font: 700 10px/18px system-ui, sans-serif; text-align: center;
         }
         #uf-overlay {
@@ -1924,7 +1924,7 @@
         }
         .uf-brand { display: flex; align-items: center; gap: 8px; font-weight: 700; min-width: 0; }
         .uf-logo { font-size: 18px; }
-        .uf-version { font-size: 10px; font-weight: 500; color: #8e8e93; }
+        .uf-version { font-size: 10px; font-weight: 500; color: #6b6b70; }
         .uf-header-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
         .uf-mini { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #636366; cursor: pointer; }
         .uf-sitebar {
@@ -1942,7 +1942,7 @@
             cursor: pointer; border-bottom: 2px solid transparent;
         }
         .uf-tab:hover { color: #1c1c1e; }
-        .uf-tab.is-active { color: #007aff; border-bottom-color: #007aff; }
+        .uf-tab.is-active { color: #0066cc; border-bottom-color: #0066cc; }
         .uf-main {
             flex: 1; overflow-y: auto; padding: 14px 16px;
             -webkit-overflow-scrolling: touch;
@@ -1951,10 +1951,10 @@
         .uf-footer {
             display: flex; justify-content: space-between; gap: 8px;
             padding: 8px 16px; border-top: 1px solid #e5e5ea;
-            font-size: 11px; color: #8e8e93; background: #fafafa;
+            font-size: 11px; color: #6b6b70; background: #fafafa;
         }
         .uf-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-        .uf-muted { color: #8e8e93; font-size: 12px; }
+        .uf-muted { color: #6b6b70; font-size: 12px; }
         .uf-rule-list { display: flex; flex-direction: column; gap: 8px; }
         .uf-rule {
             display: flex; align-items: flex-start; gap: 8px;
@@ -1965,7 +1965,7 @@
         .uf-rule-main { flex: 1; min-width: 0; }
         .uf-rule-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .uf-rule-desc { font-size: 11px; color: #636366; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .uf-rule-meta { font-size: 10px; color: #8e8e93; margin-top: 2px; }
+        .uf-rule-meta { font-size: 10px; color: #6b6b70; margin-top: 2px; }
         .uf-rule-actions { display: flex; gap: 4px; flex: 0 0 auto; }
         .uf-rule-actions .uf-btn { padding: 5px 8px; font-size: 11px; }
         .uf-empty { text-align: center; padding: 24px 8px; color: #636366; }
@@ -1997,11 +1997,11 @@
             display: flex; align-items: center; gap: 6px;
             font-size: 12px; font-weight: 500; color: #3a3a3c; cursor: pointer;
         }
-        .uf-hint { margin: 0; font-size: 11px; color: #8e8e93; font-weight: 400; }
-        .uf-error { color: #ff3b30; font-size: 12px; font-weight: 600; white-space: pre-wrap; }
-        .uf-error.is-info { color: #007aff; }
-        #uf-sync-status.is-error { color: #ff3b30; font-weight: 600; }
-        .uf-hint a { color: #007aff; }
+        .uf-hint { margin: 0; font-size: 11px; color: #6b6b70; font-weight: 400; }
+        .uf-error { color: #d70015; font-size: 12px; font-weight: 600; white-space: pre-wrap; }
+        .uf-error.is-info { color: #0066cc; }
+        #uf-sync-status.is-error { color: #d70015; font-weight: 600; }
+        .uf-hint a { color: #0066cc; }
         .uf-actions { display: flex; gap: 8px; flex-wrap: wrap; }
         .uf-actions .uf-btn { flex: 1 1 auto; }
         .uf-presets { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -2029,10 +2029,10 @@
         }
         .uf-btn:hover { background: #f2f2f7; }
         .uf-btn:active { transform: translateY(1px); }
-        .uf-btn-primary { background: #007aff; border-color: #007aff; color: #fff; }
-        .uf-btn-primary:hover { background: #0066d6; }
-        .uf-btn-danger { background: #ff3b30; border-color: #ff3b30; color: #fff; }
-        .uf-btn-danger:hover { background: #d92d24; }
+        .uf-btn-primary { background: #0066cc; border-color: #0066cc; color: #fff; }
+        .uf-btn-primary:hover { background: #0052a3; }
+        .uf-btn-danger { background: #d70015; border-color: #d70015; color: #fff; }
+        .uf-btn-danger:hover { background: #b00012; }
         .uf-icon-btn {
             appearance: none; border: none; background: transparent; color: #636366;
             font-size: 22px; line-height: 1; width: 36px; height: 36px;
@@ -2043,19 +2043,25 @@
             .uf-panel, .uf-confirm-panel { background: #1c1c1e; color: #f2f2f7; }
             .uf-header, .uf-tabs, .uf-footer, .uf-rule, .uf-card, .uf-fieldset { border-color: #38383a; }
             .uf-sitebar { background: #2c2c2e; border-color: #38383a; color: #aeaeb2; }
-            .uf-footer { background: #1c1c1e; }
+            .uf-footer { background: #1c1c1e; color: #aeaeb2; }
             .uf-btn { background: #2c2c2e; border-color: #48484a; color: #f2f2f7; }
             .uf-btn:hover { background: #3a3a3c; }
-            .uf-btn-primary { background: #0a84ff; border-color: #0a84ff; }
-            .uf-btn-primary:hover { background: #409cff; }
-            .uf-btn-danger { background: #ff453a; border-color: #ff453a; }
+            .uf-btn-primary { background: #0066cc; border-color: #0066cc; }
+            .uf-btn-primary:hover { background: #0052a3; }
+            .uf-btn-danger { background: #b3261e; border-color: #b3261e; }
             .uf-icon-btn { color: #aeaeb2; }
             .uf-icon-btn:hover, .uf-tab:hover { background: #2c2c2e; color: #f2f2f7; }
             .uf-field input, .uf-field select, .uf-field textarea {
                 background: #2c2c2e; border-color: #48484a; color: #f2f2f7;
             }
             .uf-muted, .uf-rule-desc, .uf-hint { color: #aeaeb2; }
-            .uf-rule-meta { color: #8e8e93; }
+            .uf-version { color: #aeaeb2; }
+            .uf-rule-meta { color: #aeaeb2; }
+            .uf-tab { color: #aeaeb2; }
+            .uf-tab.is-active { color: #409cff; border-bottom-color: #409cff; }
+            .uf-mini, .uf-empty { color: #aeaeb2; }
+            .uf-error { color: #ff6961; }
+            .uf-error.is-info { color: #409cff; }
             .uf-rule { background: #2c2c2e; }
             .uf-field { color: #d1d1d6; }
             .uf-fieldset legend { color: #d1d1d6; }
@@ -2063,7 +2069,7 @@
             .uf-presets button { background: #3a3a3c; border-color: #48484a; color: #f2f2f7; }
             code { background: #3a3a3c; }
             #uf-sync-status.is-error { color: #ff453a; }
-            .uf-hint a { color: #0a84ff; }
+            .uf-hint a { color: #409cff; }
         }
     `;
 
@@ -2087,10 +2093,10 @@
                 </header>
                 <div class="uf-sitebar" id="uf-sitebar"></div>
                 <nav class="uf-tabs" role="tablist">
-                    <button type="button" class="uf-tab is-active" data-tab="rules" role="tab" aria-selected="true" aria-controls="uf-tab-rules">ルール</button>
-                    <button type="button" class="uf-tab" data-tab="site" role="tab" aria-selected="false" aria-controls="uf-tab-site">サイト</button>
-                    <button type="button" class="uf-tab" data-tab="data" role="tab" aria-selected="false" aria-controls="uf-tab-data">データ</button>
-                    <button type="button" class="uf-tab" data-tab="help" role="tab" aria-selected="false" aria-controls="uf-tab-help">ヘルプ</button>
+                    <button type="button" class="uf-tab is-active" data-tab="rules" role="tab" tabindex="0" aria-selected="true" aria-controls="uf-tab-rules">ルール</button>
+                    <button type="button" class="uf-tab" data-tab="site" role="tab" tabindex="-1" aria-selected="false" aria-controls="uf-tab-site">サイト</button>
+                    <button type="button" class="uf-tab" data-tab="data" role="tab" tabindex="-1" aria-selected="false" aria-controls="uf-tab-data">データ</button>
+                    <button type="button" class="uf-tab" data-tab="help" role="tab" tabindex="-1" aria-selected="false" aria-controls="uf-tab-help">ヘルプ</button>
                 </nav>
                 <main class="uf-main">
                     <section id="uf-tab-rules" class="uf-tabpanel" role="tabpanel">
@@ -2506,6 +2512,19 @@
 
         queryAll('.uf-tab').forEach((button) => {
             button.addEventListener('click', () => switchTab(button.dataset.tab));
+            button.addEventListener('keydown', (event) => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const tabs = queryAll('.uf-tab');
+                const index = tabs.indexOf(button);
+                let next = index;
+                if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = tabs.length - 1;
+                else next = (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+                const target = tabs[next];
+                target.focus();
+                switchTab(target.dataset.tab);
+            });
         });
 
         query('#uf-global').addEventListener('change', (event) => {
@@ -2734,6 +2753,7 @@
             const selected = button.dataset.tab === name;
             button.classList.toggle('is-active', selected);
             button.setAttribute('aria-selected', selected ? 'true' : 'false');
+            button.tabIndex = selected ? 0 : -1;
         });
         for (const tab of ['rules', 'site', 'data', 'help']) {
             query('#uf-tab-' + tab).hidden = tab !== name;
@@ -3195,13 +3215,13 @@
         applyShadowStyles(root, `
             :host { all: initial; }
             .box {
-                position: fixed; display: none; border: 2px solid #0a84ff;
-                background: rgba(10,132,255,.14); border-radius: 3px;
+                position: fixed; display: none; border: 2px solid #0066cc;
+                background: rgba(0,102,204,.14); border-radius: 3px;
                 pointer-events: none; box-sizing: border-box; z-index: 2;
             }
             .label {
                 position: fixed; display: none; max-width: min(90vw, 560px);
-                padding: 2px 6px; border-radius: 4px; background: #0a84ff; color: #fff;
+                padding: 2px 6px; border-radius: 4px; background: #0066cc; color: #fff;
                 font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
                 pointer-events: none; z-index: 3;
@@ -3222,7 +3242,7 @@
         label.className = 'label';
         const tip = document.createElement('div');
         tip.className = 'tip';
-        tip.textContent = options.tip || 'クリックで要素を選択 / Esc でキャンセル';
+        tip.textContent = options.tip || 'クリックまたは矢印キーで選択 / Enterで決定 / Escでキャンセル';
         root.appendChild(box);
         root.appendChild(label);
         root.appendChild(tip);
@@ -3307,10 +3327,44 @@
             }
         };
         const onKey = (event) => {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            event.stopPropagation();
-            finish();
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                finish();
+                return;
+            }
+            const step = event.shiftKey ? 2 : 24;
+            const moves = {
+                ArrowLeft: [-step, 0],
+                ArrowRight: [step, 0],
+                ArrowUp: [0, -step],
+                ArrowDown: [0, step]
+            };
+            if (moves[event.key]) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (lastX === 0 && lastY === 0) {
+                    lastX = window.innerWidth / 2;
+                    lastY = window.innerHeight / 2;
+                }
+                lastX = Math.max(0, Math.min(window.innerWidth - 1, lastX + moves[event.key][0]));
+                lastY = Math.max(0, Math.min(window.innerHeight - 1, lastY + moves[event.key][1]));
+                update();
+                return;
+            }
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!current) update();
+                if (!current) return;
+                const picked = current;
+                finish();
+                try {
+                    onPick(picked);
+                } catch (error) {
+                    console.warn('[Open Filter] ピッカーの処理に失敗しました', error);
+                }
+            }
         };
         const onContext = (event) => event.preventDefault();
         const onScroll = () => schedule();
@@ -3355,7 +3409,7 @@
                 if (text) nameInput.value = text;
             }
             showFormInfo(`選択: ${selector}（一致 ${safeCount(selector)} 件）`);
-        }, { tip: '非表示にしたい要素をクリック / Esc でキャンセル' });
+        }, { tip: '非表示にしたい要素をクリックまたは矢印キーで選択 / Enterで決定 / Escでキャンセル' });
     }
 
     function pickProbe() {
@@ -3393,7 +3447,7 @@
             const relative = buildRelativeSelector(ancestor, element);
             uiRoot.querySelector('#uf-f-probe').value = relative;
             showFormInfo(relative ? `判定対象: ${relative}` : '判定対象: 対象要素自身');
-        }, { tip: '判定に使うタイトル・タグなどの要素をクリック / Esc でキャンセル' });
+        }, { tip: '判定に使うタイトル・タグなどの要素をクリックまたは矢印キーで選択 / Enterで決定 / Escでキャンセル' });
     }
 
     // ------------------------------------------------------------------
