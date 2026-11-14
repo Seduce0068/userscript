@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.0.0
+// @version      3.1.0
 // @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.0.0';
+    const VERSION = '3.1.0';
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
     const SYNC_GAS_KEY = 'open_filter_gas_key';
@@ -96,7 +96,7 @@
             version: 3,
             globalEnabled: true,
             sites: Object.create(null),
-            ui: { showInFrames: false },
+            ui: { showInFrames: false, hideTrigger: false },
             sync: {
                 enabled: false,
                 provider: 'gist',
@@ -111,6 +111,7 @@
         if (!raw || typeof raw !== 'object') return out;
         if (raw.globalEnabled === false) out.globalEnabled = false;
         if (raw.ui && raw.ui.showInFrames === true) out.ui.showInFrames = true;
+        if (raw.ui && raw.ui.hideTrigger === true) out.ui.hideTrigger = true;
         if (raw.sync && typeof raw.sync === 'object') {
             out.sync.enabled = raw.sync.enabled === true;
             out.sync.provider = raw.sync.provider === 'gas' ? 'gas' : 'gist';
@@ -1493,6 +1494,11 @@
                             <p class="uf-muted">全サイト共通の設定です。変更はリロード後に反映されます。iframe 内のルールは、その iframe のホスト名で保存されます。</p>
                         </div>
                         <div class="uf-card">
+                            <h3>表示</h3>
+                            <label class="uf-check"><input type="checkbox" id="uf-hide-trigger"> 歯車ボタン（⚙）を非表示にする</label>
+                            <p class="uf-muted">全サイト共通の設定です。非表示にしても、ユーザースクリプトメニューの「Open Filter 設定を開く」または <code>Alt+Shift+O</code> で設定を開けます。</p>
+                        </div>
+                        <div class="uf-card">
                             <h3>ページ</h3>
                             <label class="uf-check"><input type="checkbox" id="uf-here-only"> 現在のページのルールだけ表示</label>
                             <p class="uf-muted">現在のパス: <code id="uf-site-path"></code></p>
@@ -1576,6 +1582,7 @@
                                 <li>属性値で判定する場合は、属性名（例: <code>href</code>, <code>data-tag</code>）を指定します。</li>
                                 <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。</li>
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
+                                <li>歯車ボタンが邪魔な場合は、「サイト」タブの「表示」で非表示にできます。非表示中はユーザースクリプトメニューまたは <code>Alt+Shift+O</code> で設定を開けます。</li>
                                 <li>SPAのURL変更にも追従します。</li>
                             </ul>
                             <h3>クラウド同期</h3>
@@ -1726,6 +1733,7 @@
 
         ensureUiHost();
         bindUi();
+        applyTriggerVisibility();
     }
 
     function ensureUiHost() {
@@ -1734,6 +1742,20 @@
             // body の置換や非表示の影響を受けないよう html 直下に置く
             document.documentElement.appendChild(uiHost);
         }
+    }
+
+    function applyTriggerVisibility() {
+        if (!uiRoot) return;
+        const trigger = uiRoot.querySelector('#uf-trigger');
+        if (!trigger) return;
+        trigger.hidden = state.ui.hideTrigger === true;
+    }
+
+    function toggleTriggerVisibility() {
+        state.ui.hideTrigger = state.ui.hideTrigger !== true;
+        saveState();
+        applyTriggerVisibility();
+        if (uiRoot) renderSiteTab();
     }
 
     function bindUi() {
@@ -1753,6 +1775,17 @@
         });
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && !query('#uf-overlay').hidden) closePanel();
+        });
+        // 歯車ボタンを非表示にしていても開けるよう、キーボードショートカットを用意する
+        document.addEventListener('keydown', (event) => {
+            if (event.repeat || pickerState) return;
+            if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
+            const isO = event.code === 'KeyO' || String(event.key || '').toLowerCase() === 'o';
+            if (!isO) return;
+            event.preventDefault();
+            const overlay = query('#uf-overlay');
+            if (overlay.hidden) openPanel();
+            else closePanel();
         });
 
         queryAll('.uf-tab').forEach((button) => {
@@ -1807,6 +1840,12 @@
             if (!event.isTrusted) return;
             state.ui.showInFrames = event.target.checked;
             saveState();
+        });
+        query('#uf-hide-trigger').addEventListener('change', (event) => {
+            if (!event.isTrusted) return;
+            state.ui.hideTrigger = event.target.checked;
+            saveState();
+            applyTriggerVisibility();
         });
         query('#uf-here-only').addEventListener('change', renderRuleList);
         query('#uf-site-delete').addEventListener('click', (event) => {
@@ -1876,6 +1915,7 @@
         renderSiteTab();
         renderDataTab();
         updateUiStats();
+        applyTriggerVisibility();
     }
 
     function renderSiteBar() {
@@ -2507,6 +2547,7 @@
         query('#uf-site-host').textContent = location.host;
         query('#uf-site-enabled').checked = profile ? profile.enabled : false;
         query('#uf-show-frames').checked = state.ui.showInFrames;
+        query('#uf-hide-trigger').checked = state.ui.hideTrigger === true;
         query('#uf-site-path').textContent = location.pathname;
         const count = profile ? profile.rules.length : 0;
         const active = profile ? profile.rules.filter((rule) => rule.enabled && pageMatches(rule)).length : 0;
@@ -2661,7 +2702,7 @@
             version: 3,
             globalEnabled: true,
             sites: Object.create(null),
-            ui: { showInFrames: false },
+            ui: { showInFrames: false, hideTrigger: false },
             sync: {
                 enabled: false,
                 provider: 'gist',
@@ -2762,6 +2803,7 @@
         try {
             if (typeof GM_registerMenuCommand === 'function') {
                 GM_registerMenuCommand('Open Filter 設定を開く', openPanel);
+                GM_registerMenuCommand('歯車ボタン（⚙）の表示を切り替える', toggleTriggerVisibility);
             }
         } catch (error) {
             // 未対応環境では何もしない
