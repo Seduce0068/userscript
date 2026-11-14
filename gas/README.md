@@ -31,7 +31,22 @@ clasp --version
 clasp login
 ```
 
-### 2. GAS プロジェクトの作成
+### 2. Google Apps Script API の有効化
+
+初回のみ、clasp が使う **Google Apps Script API** を有効化します。
+
+1. <https://script.google.com/home/usersettings> を開く
+2. 「Google Apps Script API」を **オン** にする
+3. 反映まで数分待つ
+
+有効化せずに `clasp create` すると、次のエラーになります。
+
+```text
+User has not enabled the Apps Script API. Enable it by visiting
+https://script.google.com/home/usersettings then retry.
+```
+
+### 3. GAS プロジェクトの作成
 
 既存の同期用プロジェクトを上書きしないよう、**新しいプロジェクト**を作ることを推奨します。
 
@@ -56,7 +71,7 @@ cp .clasp.example.json .clasp.json
 clasp clone <ScriptID> --rootDir .
 ```
 
-### 3. 共有キーの設定
+### 4. 共有キーの設定
 
 1. Apps Script エディタを開く
 2. 「プロジェクトの設定」→「スクリプト プロパティ」
@@ -66,7 +81,7 @@ clasp clone <ScriptID> --rootDir .
 
 または、エディタで `setSharedKey('...')` を一度実行して保存することもできます。
 
-### 4. デプロイ
+### 5. デプロイ
 
 ```bash
 clasp push
@@ -75,7 +90,7 @@ clasp deploy --description "Open Filter Sync v1"
 
 表示された **ウェブアプリの URL**（`https://script.google.com/macros/s/.../exec`）を控えます。
 
-### 5. ユーザースクリプト側の設定
+### 6. ユーザースクリプト側の設定
 
 1. Open Filter の「データ」タブ →「クラウド同期」
 2. 同期方法を **Google Apps Script** に変更
