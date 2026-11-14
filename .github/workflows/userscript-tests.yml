@@ -5,6 +5,7 @@ on:
     paths:
       - 'openFilter.js'
       - 'gas/**'
+      - 'scripts/**'
       - 'tests/**'
       - 'package.json'
       - 'package-lock.json'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'openFilter.js'
       - 'gas/**'
+      - 'scripts/**'
       - 'tests/**'
       - 'package.json'
       - 'package-lock.json'

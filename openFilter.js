@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.9.0
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/openFilter.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/openFilter.js
+// @version      3.9.1
+// @updateURL    https://gist.githubusercontent.com/Seduce0068/e4c597b30b872dc1fb247f1843825009/raw/openFilter.user.js
+// @downloadURL  https://gist.githubusercontent.com/Seduce0068/e4c597b30b872dc1fb247f1843825009/raw/openFilter.user.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
 // @author       opencode
 // @match        *://*/*
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.9.0';
+    const VERSION = '3.9.1';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';

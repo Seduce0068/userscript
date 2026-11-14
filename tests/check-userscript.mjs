@@ -35,6 +35,30 @@ if (!constMatch) {
     errors.push('@version と VERSION が一致しません: ' + version + ' vs ' + constMatch[1]);
 }
 
+const updateUrl = (meta.updateURL || [])[0] || '';
+const downloadUrl = (meta.downloadURL || [])[0] || '';
+if (!updateUrl) errors.push('@updateURL がありません');
+if (!downloadUrl) errors.push('@downloadURL がありません');
+if (updateUrl && downloadUrl && updateUrl !== downloadUrl) {
+    errors.push('@updateURL と @downloadURL が一致しません');
+}
+if (updateUrl && !/^https:\/\//.test(updateUrl)) {
+    errors.push('@updateURL が https ではありません');
+}
+if (updateUrl && !/\/openFilter\.user\.js$/.test(updateUrl)) {
+    errors.push('@updateURL が openFilter.user.js を指していません');
+}
+const gistIdFile = path.join(root, 'scripts', 'openfilter-gist-id.txt');
+if (fs.existsSync(gistIdFile)) {
+    const gistId = fs.readFileSync(gistIdFile, 'utf8').trim();
+    if (gistId && !updateUrl.includes(gistId)) {
+        errors.push('@updateURL が scripts/openfilter-gist-id.txt と一致しません');
+    }
+}
+if (/github\.com\/onoderakeita\/userscript/.test(updateUrl)) {
+    errors.push('旧リポジトリの更新URLが残っています');
+}
+
 const grants = new Set((meta.grant || []).map((value) => value.trim()));
 for (const grant of [
     'GM_getValue', 'GM_setValue', 'GM_addStyle', 'GM_registerMenuCommand',
