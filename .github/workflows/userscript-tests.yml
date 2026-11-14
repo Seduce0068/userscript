@@ -1,0 +1,43 @@
+name: userscript tests
+
+on:
+  push:
+    paths:
+      - 'openFilter.js'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/userscript-tests.yml'
+  pull_request:
+    paths:
+      - 'openFilter.js'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/userscript-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: userscript-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium firefox
+      - name: Run tests
+        run: npm test
