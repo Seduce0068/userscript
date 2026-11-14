@@ -2,13 +2,13 @@
 // @name         Force PWA Everywhere (Full Custom)
 // @namespace    force-pwa-everywhere-full
 // @version      3.0.0
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/Force%20PWA%20Everywhere.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/Force%20PWA%20Everywhere.js
+// @updateURL    https://github.com/Seduce0068/userscript/raw/master/Force%20PWA%20Everywhere.js
+// @downloadURL  https://github.com/Seduce0068/userscript/raw/master/Force%20PWA%20Everywhere.js
 // @description  PWA manifestを動的に注入し、ユーザー操作でインストールプロンプトを表示します。
 // @author       koppe
 // @license      MIT
-// @homepageURL  https://github.com/onoderakeita/userscript
-// @supportURL   https://github.com/onoderakeita/userscript/issues
+// @homepageURL  https://github.com/Seduce0068/userscript
+// @supportURL   https://github.com/Seduce0068/userscript/issues
 // @match        *://*/*
 // @run-at       document-start
 // @noframes
