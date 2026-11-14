@@ -2,8 +2,8 @@
 // @name         Global Font Changer
 // @namespace    http://tampermonkey.net/
 // @version      1.4
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/globalfontchangeer-2.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/globalfontchangeer-2.js
+// @updateURL    https://github.com/Seduce0068/userscript/raw/master/globalfontchangeer-2.js
+// @downloadURL  https://github.com/Seduce0068/userscript/raw/master/globalfontchangeer-2.js
 // @description  Force all websites to use your favorite font. (三点リーダーのみベースライン寄りに補正 / Shadow DOM対応)
 // @author       Gemini
 // @match        http://*/*
