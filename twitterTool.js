@@ -5,8 +5,8 @@
 // @namespace    http://tampermonkey.net/
 
 // @version      1.1
-// @updateURL    https://github.com/onoderakeita/userscript/raw/master/twitterTool.js
-// @downloadURL  https://github.com/onoderakeita/userscript/raw/master/twitterTool.js
+// @updateURL    https://github.com/Seduce0068/userscript/raw/master/twitterTool.js
+// @downloadURL  https://github.com/Seduce0068/userscript/raw/master/twitterTool.js
 
 // @description  X (Twitter)の検索結果、タイムラインから、指定したアカウントとキーワードを含むポストを自動的に非表示にします。
 
