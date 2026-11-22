@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'openFilter.js'
+      - 'x-video-swipe-blocker.user.js'
       - 'gas/**'
       - 'scripts/**'
       - 'tests/**'
@@ -13,6 +14,7 @@ on:
   pull_request:
     paths:
       - 'openFilter.js'
+      - 'x-video-swipe-blocker.user.js'
       - 'gas/**'
       - 'scripts/**'
       - 'tests/**'

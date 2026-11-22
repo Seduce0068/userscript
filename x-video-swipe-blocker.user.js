@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         X Video Swipe Blocker (Browser/PWA)
 // @namespace    https://github.com/Seduce0068
-// @version      1.0.0
-// @description  X（Twitter）で動画を開いたあと、スワイプで別の動画へ次々と遷移するのを防止する。動画ビューアのURL固定（別ポストの動画への遷移を遮断）と、動画上での縦スワイプ／ホイール／矢印キーの遮断の二層構造。
+// @version      1.0.1
+// @description  X（Twitter）の動画ビューア（/mediaViewer）で、縦スワイプ・ホイール・矢印キーによる次の動画への連続遷移を遮断する。タップ、横スワイプ、ビューアを閉じる操作はそのまま使える。
 // @author       Koppe + Muse
-// @match        https://x.com/*
+// @match        *://*.x.com/*
+// @match        *://*.twitter.com/*
 // @grant        none
 // @run-at       document-start
 // @noframes
@@ -22,139 +23,33 @@
   };
 
   /* ---------------------------------------------------------------
-   * 層1: URLガード（本命）
-   *   動画ビューアは /<user>/status/<id>/video/<n> というURLを持つ。
-   *   スワイプで次の動画へ移ると、ビューアを開いたまま別ポストの
-   *   /video/ URLへ pushState で遷移するので、それを入口で止める。
-   *   ビューアを閉じる（メディアURLから離れる）とロックは解除される。
-   *   同じポスト内のメディア移動（同じ <id>）は止めない。
+   * ビューア検出
+   *   現在の X の動画ビューアは
+   *     /<user>/status/<id>/mediaViewer?currentTweet=<id>
+   *   という URL。縦スワイプするとパスは変わらず、currentTweet だけが
+   *   次のポストの ID に書き換わる。旧形式の /video/<n> /photo/<n> も
+   *   一応検出しておく。
    * ------------------------------------------------------------- */
-  const MEDIA_RE = /^\/[^/]+\/status\/(\d+)\/(video|photo)\/\d+/;
+  const VIEWER_RE = /^\/[^/]+\/status\/(\d+)\/(mediaViewer|video|photo)(?:\/|\?|$)/;
 
-  function parseMedia(url) {
+  function viewerInfo(url) {
     try {
-      const m = new URL(url, location.origin).pathname.match(MEDIA_RE);
-      return m ? { id: m[1], kind: m[2] } : null;
+      const u = new URL(url === undefined ? location.href : url, location.origin);
+      const m = u.pathname.match(VIEWER_RE);
+      if (!m) return null;
+      const rawTweet = u.searchParams.get('currentTweet') || '';
+      return {
+        key: m[2] === 'mediaViewer'
+          ? u.pathname.replace(/\/+$/, '')
+          : '/' + m[1] + '/' + m[2],
+        rawTweet: rawTweet,
+      };
     } catch (_) {
       return null;
     }
   }
 
-  let lockedVideoId = null;
-
-  function refreshLock() {
-    const cur = parseMedia(location.href);
-    if (cur && cur.kind === 'video') {
-      lockedVideoId = cur.id;
-    } else if (!cur) {
-      lockedVideoId = null;
-    }
-  }
-
-  function isBlockedTarget(targetUrl) {
-    const tgt = parseMedia(targetUrl);
-    if (!lockedVideoId || !tgt) return false;
-    return tgt.kind === 'video' && tgt.id !== lockedVideoId;
-  }
-
-  const origPushState = history.pushState;
-  const origReplaceState = history.replaceState;
-  history.pushState = function (...args) {
-    if (args[2] !== undefined && isBlockedTarget(args[2])) {
-      log('pushState blocked ->', args[2]);
-      showToast();
-      return;
-    }
-    const r = origPushState.apply(this, args);
-    refreshLock();
-    return r;
-  };
-  history.replaceState = function (...args) {
-    if (args[2] !== undefined && isBlockedTarget(args[2])) {
-      log('replaceState blocked ->', args[2]);
-      showToast();
-      return;
-    }
-    const r = origReplaceState.apply(this, args);
-    refreshLock();
-    return r;
-  };
-  window.addEventListener('popstate', refreshLock);
-  refreshLock();
-
-  /* ---------------------------------------------------------------
-   * 層2: ジェスチャ遮断（予備）
-   *   URLが変わる前にスクロールで次動画を読み込む実装でも、
-   *   動画の上での縦スワイプ／ホイール／↑↓キーを止めて防ぐ。
-   *   対象は動画ビューアを開いている間だけ。
-   * ------------------------------------------------------------- */
-  function inVideoViewer() {
-    const cur = parseMedia(location.href);
-    return !!(cur && cur.kind === 'video');
-  }
-
-  function onVideoSurface(target) {
-    if (!(target instanceof Element)) return false;
-    return !!(
-      target.closest('video') ||
-      (target.querySelector && target.querySelector('video'))
-    );
-  }
-
-  let touchStartX = null;
-  let touchStartY = null;
-  document.addEventListener(
-    'touchstart',
-    (e) => {
-      if (e.touches.length === 1) {
-        touchStartX = e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
-      }
-    },
-    { capture: true, passive: true }
-  );
-  document.addEventListener(
-    'touchmove',
-    (e) => {
-      if (!inVideoViewer() || touchStartY === null) return;
-      if (!onVideoSurface(e.target)) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      const dx = e.touches[0].clientX - touchStartX;
-      if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 10) {
-        e.preventDefault();
-        log('touchmove swipe blocked');
-      }
-    },
-    { capture: true, passive: false }
-  );
-  document.addEventListener(
-    'wheel',
-    (e) => {
-      if (!inVideoViewer()) return;
-      if (!onVideoSurface(e.target)) return;
-      e.preventDefault();
-      log('wheel blocked');
-    },
-    { capture: true, passive: false }
-  );
-  document.addEventListener(
-    'keydown',
-    (e) => {
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-      if (!inVideoViewer()) return;
-      const t = e.target;
-      if (
-        t instanceof HTMLInputElement ||
-        t instanceof HTMLTextAreaElement ||
-        (t instanceof HTMLElement && t.isContentEditable)
-      ) {
-        return;
-      }
-      e.preventDefault();
-      log('arrow key blocked');
-    },
-    true
-  );
+  const inViewer = () => !!viewerInfo();
 
   /* ---------------------------------------------------------------
    * 遮断時の小さな通知（連打防止つき）
@@ -164,14 +59,15 @@
     const now = Date.now();
     if (now - lastToastAt < 1500) return;
     lastToastAt = now;
-    if (!document.body) return;
+    const host = document.body || document.documentElement;
+    if (!host) return;
     const el = document.createElement('div');
     el.textContent = '次の動画への移動はブロック中';
     el.style.cssText =
       'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);' +
       'background:rgba(0,0,0,.82);color:#fff;padding:8px 14px;border-radius:999px;' +
       'font-size:13px;z-index:2147483647;pointer-events:none;opacity:0;transition:opacity .2s';
-    document.body.appendChild(el);
+    host.appendChild(el);
     requestAnimationFrame(() => {
       el.style.opacity = '1';
     });
@@ -180,6 +76,188 @@
       setTimeout(() => el.remove(), 250);
     }, 1200);
   }
+
+  /* ---------------------------------------------------------------
+   * URL バックストップ
+   *   ジェスチャ遮断をすり抜けて currentTweet が変わった場合は
+   *   history.back() で開いた時点の動画に戻す。
+   * ------------------------------------------------------------- */
+  let anchorKey = '';
+  let anchorTweet = '';
+  let anchorHref = '';
+  let lastHref = '';
+  let lastRevertAt = 0;
+
+  function checkAnchor(mode) {
+    const href = location.href;
+    if (href === lastHref) return;
+    lastHref = href;
+    const info = viewerInfo();
+    if (!info) {
+      anchorKey = '';
+      anchorTweet = '';
+      anchorHref = '';
+      return;
+    }
+    if (!anchorKey) {
+      anchorKey = info.key;
+      // 読み込み直後は currentTweet が空のことがある。
+      anchorTweet = info.rawTweet;
+      anchorHref = href;
+      log('anchor set', anchorKey, anchorTweet || '(pending)');
+      return;
+    }
+    if (!anchorTweet && info.rawTweet) {
+      anchorTweet = info.rawTweet;
+      anchorHref = href;
+      log('anchor tweet set', anchorTweet);
+      return;
+    }
+    if (info.key !== anchorKey || (info.rawTweet && info.rawTweet !== anchorTweet)) {
+      const now = Date.now();
+      if (now - lastRevertAt < 1000) return;
+      lastRevertAt = now;
+      log('advance detected -> revert', mode, href);
+      showToast();
+      if (mode === 'replaceState' && anchorHref) {
+        // replaceState で上書きされている履歴を back() するとビューアごと
+        // 閉じてしまう。開いた時点の URL に直接戻す。
+        location.replace(anchorHref);
+      } else {
+        // popstate 側で checkAnchor() が動く。popstate 内で pushState はしない。
+        history.back();
+      }
+    }
+  }
+
+  for (const method of ['pushState', 'replaceState']) {
+    const original = history[method];
+    history[method] = function (...args) {
+      const result = original.apply(this, args);
+      checkAnchor(method);
+      return result;
+    };
+  }
+  window.addEventListener('popstate', () => checkAnchor('popstate'));
+  if (typeof MutationObserver === 'function') {
+    try {
+      // DOM 更新を契機に URL の変化を確認する（DOM 自体は見ていない）。
+      new MutationObserver(() => checkAnchor('dom')).observe(document, {
+        subtree: true,
+        childList: true,
+      });
+    } catch (_) {
+      // document がまだ安定していない場合でも history フックで十分。
+    }
+  }
+  checkAnchor('init');
+
+  /* ---------------------------------------------------------------
+   * ジェスチャ遮断（主防御）
+   *   window の capture フェーズで先に掴み、stopImmediatePropagation で
+   *   X 側のハンドラに渡さない。preventDefault だけでは X の
+   *   touchend ハンドラは動いてしまうので、両方必要。
+   * ------------------------------------------------------------- */
+  const THRESH = 12;
+  const LISTEN_OPTS = { capture: true, passive: false };
+  let suppressClickUntil = 0;
+
+  function cancel(e) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+
+  // touchend の preventDefault だけでは後続の click を止められないため、
+  // 縦スワイプ直後の click も短期間だけ捨てる。
+  function cancelSwipe(e) {
+    suppressClickUntil = Date.now() + 400;
+    cancel(e);
+  }
+
+  window.addEventListener(
+    'click',
+    (e) => {
+      if (!inViewer() || Date.now() >= suppressClickUntil) return;
+      log('click suppressed after swipe');
+      cancel(e);
+    },
+    LISTEN_OPTS
+  );
+
+  function makeGesture(name, getPoint) {
+    const state = { x: 0, y: 0, active: false, vertical: false };
+    return {
+      start(e) {
+        if (!inViewer()) return;
+        const p = getPoint(e);
+        if (!p) return;
+        state.x = p.x;
+        state.y = p.y;
+        state.active = true;
+        state.vertical = false;
+      },
+      move(e) {
+        if (!inViewer() || !state.active) return;
+        const p = getPoint(e);
+        if (!p) return;
+        const dx = Math.abs(p.x - state.x);
+        const dy = Math.abs(p.y - state.y);
+        if (!state.vertical && dy > THRESH && dy > dx) {
+          state.vertical = true;
+          log(name + ' vertical swipe blocked');
+          showToast();
+        }
+        if (state.vertical) cancelSwipe(e);
+      },
+      end(e) {
+        if (state.vertical && inViewer()) cancelSwipe(e);
+        state.active = false;
+        state.vertical = false;
+      },
+    };
+  }
+
+  const touchGesture = makeGesture('touch', (e) => {
+    const t = e.touches[0] || e.changedTouches[0];
+    return t ? { x: t.clientX, y: t.clientY } : null;
+  });
+  const pointerGesture = makeGesture('pointer', (e) => ({ x: e.clientX, y: e.clientY }));
+
+  window.addEventListener('touchstart', (e) => touchGesture.start(e), LISTEN_OPTS);
+  window.addEventListener('touchmove', (e) => touchGesture.move(e), LISTEN_OPTS);
+  window.addEventListener('touchend', (e) => touchGesture.end(e), LISTEN_OPTS);
+  window.addEventListener('touchcancel', (e) => touchGesture.end(e), LISTEN_OPTS);
+  window.addEventListener('pointerdown', (e) => pointerGesture.start(e), LISTEN_OPTS);
+  window.addEventListener('pointermove', (e) => pointerGesture.move(e), LISTEN_OPTS);
+  window.addEventListener('pointerup', (e) => pointerGesture.end(e), LISTEN_OPTS);
+  window.addEventListener('pointercancel', (e) => pointerGesture.end(e), LISTEN_OPTS);
+
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      if (!inViewer()) return;
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      log('wheel blocked');
+      showToast();
+      cancel(e);
+    },
+    LISTEN_OPTS
+  );
+
+  const NAV_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'];
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (!inViewer() || !NAV_KEYS.includes(e.key)) return;
+      const t = e.target;
+      const tag = t && t.tagName ? String(t.tagName).toUpperCase() : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+      log('key blocked', e.key);
+      showToast();
+      cancel(e);
+    },
+    LISTEN_OPTS
+  );
 
   log('loaded on', location.href);
 })();

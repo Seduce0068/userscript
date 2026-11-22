@@ -4,10 +4,11 @@
   "version": "1.0.0",
   "description": "Open Filter userscript regression tests",
   "scripts": {
-    "test": "node tests/check-userscript.mjs && node tests/check-gas.mjs && node tests/run.cjs && node tests/safety.cjs",
+    "test": "node tests/check-userscript.mjs && node tests/check-gas.mjs && node tests/run.cjs && node tests/safety.cjs && node tests/x-video-swipe-blocker.cjs",
     "test:check": "node tests/check-userscript.mjs && node tests/check-gas.mjs",
     "test:feature": "node tests/run.cjs",
-    "test:safety": "node tests/safety.cjs"
+    "test:safety": "node tests/safety.cjs",
+    "test:x-swipe": "node tests/x-video-swipe-blocker.cjs"
   },
   "devDependencies": {
     "playwright": "1.61.1"
