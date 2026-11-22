@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open Filter
 // @namespace    open-filter
-// @version      3.9.2
+// @version      3.9.3
 // @updateURL    https://gist.githubusercontent.com/Seduce0068/e4c597b30b872dc1fb247f1843825009/raw/openFilter.user.js
 // @downloadURL  https://gist.githubusercontent.com/Seduce0068/e4c597b30b872dc1fb247f1843825009/raw/openFilter.user.js
 // @description  任意のサイトで使える汎用コンテンツフィルター。ページごとにルールを保存し、要素選択・テキスト/属性/正規表現/子要素数/CSSで非表示にします。
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '3.9.2';
+    const VERSION = '3.9.3';
     const SCHEMA_VERSION = 3;
     const STORAGE_KEY = 'open_filter_state_v3';
     const SYNC_TOKEN_KEY = 'open_filter_gist_token';
@@ -2244,14 +2244,17 @@
                             <h3>使い方</h3>
                             <ol>
                                 <li>「＋ 新規ルール」を押します。</li>
-                                <li>「対象セレクタ」の「選択」を押し、ページ上で非表示にしたい要素をクリックします。</li>
-                                <li>タイトルやタグで判定する場合は、「判定対象」にタイトル要素を指定し、条件タイプとキーワードを設定します。</li>
+                                <li>「対象セレクタ」の「選択」を押し、ページ上で非表示にしたい要素をクリックします。タグだけを消したい場合はタグを、タグを含むカード全体を消したい場合はその親をクリックします。</li>
+                                <li>タイトルやタグで判定する場合は、「判定対象」にタイトル要素やタグを指定し、条件タイプとキーワードを設定します。</li>
                                 <li>「一致を確認」で件数を確認し、「保存」します。</li>
+                                <li>例: <code>&lt;span class="tag"&gt;広告&lt;/span&gt;</code> を含む <code>.card</code> だけを消す場合は、対象セレクタ <code>.card</code>・条件タイプ「テキストに含む」・判定対象 <code>.tag</code>・条件値 <code>広告</code> を設定します。</li>
                             </ol>
                             <h3>ポイント</h3>
                             <ul>
                                 <li>設定はホスト名ごとに保存されます。「適用パス」を指定すると、特定のページだけでルールを有効にできます。</li>
                                 <li>「判定対象」は対象要素の子孫から選びます。空の場合は対象要素全体のテキストを使います。</li>
+                                <li>要素選択では、<code>Shift</code> を押しながらクリックすると一段上の親要素を選べます。「親を選択」ボタンでも同じことができます。キーボード操作では矢印キーで位置を動かし、<code>Shift+Enter</code> で親を確定できます。</li>
+                                <li>対象セレクタに <code>.card:has(> .tag)</code> のように <code>:has()</code> を使うと、条件なしで「タグを含む親」を直接指定できます（Edge / Firefox / Chrome / Safari で利用可能）。</li>
                                 <li>属性値で判定する場合は、属性名（例: <code>href</code>, <code>data-tag</code>）を指定します。</li>
                                 <li>カスタムCSSは宣言のみです。<code>display:none</code> 以外の見た目変更に使えます。外部リクエストを防ぐため <code>url()</code> / <code>@import</code> / <code>expression()</code> は使用できません。</li>
                                 <li>「DOMから削除」は再読み込みで元のDOMが復元されますが、ルールが有効なままだと再度削除されます。</li>
@@ -2309,9 +2312,10 @@
                 <span class="uf-input-row">
                     <input type="text" id="uf-f-selector" spellcheck="false" placeholder=".card, article.post">
                     <button type="button" id="uf-pick-target" class="uf-btn">選択</button>
+                    <button type="button" id="uf-pick-target-parent" class="uf-btn">親を選択</button>
                 </span>
             </label>
-            <p class="uf-hint">このセレクタに一致する要素が、非表示またはCSS適用の対象になります。</p>
+            <p class="uf-hint">このセレクタに一致する要素が、非表示またはCSS適用の対象になります。タグを含む親を消す場合は、親を選んで「判定対象」にタグを指定してください。</p>
             <label class="uf-field">適用パス（任意・前方一致）
                 <span class="uf-input-row">
                     <input type="text" id="uf-f-page" spellcheck="false" placeholder="/tags/（空ならサイト全体）">
@@ -2583,7 +2587,8 @@
             onDeleteRule();
         });
         query('#uf-preview').addEventListener('click', onPreview);
-        query('#uf-pick-target').addEventListener('click', pickTarget);
+        query('#uf-pick-target').addEventListener('click', () => pickTarget(false));
+        query('#uf-pick-target-parent').addEventListener('click', () => pickTarget(true));
         query('#uf-pick-probe').addEventListener('click', pickProbe);
         query('#uf-page-here').addEventListener('click', () => {
             query('#uf-f-page').value = location.pathname;
@@ -3285,7 +3290,7 @@
         label.className = 'label';
         const tip = document.createElement('div');
         tip.className = 'tip';
-        tip.textContent = options.tip || 'クリックまたは矢印キーで選択 / Enterで決定 / Escでキャンセル';
+        tip.textContent = options.tip || 'クリックまたは矢印キーで選択 / Shift+クリックで親へ / Enterで決定 / Escでキャンセル';
         root.appendChild(box);
         root.appendChild(label);
         root.appendChild(tip);
@@ -3298,12 +3303,25 @@
         let lastX = 0;
         let lastY = 0;
         let raf = 0;
+        let shiftHeld = false;
 
         const isOwn = (element) => {
             if (!element) return true;
             if (element === pickerHost || element === uiHost) return true;
             if (element.closest && (element.closest('#' + HOST_ID) || element.closest('#' + PICKER_ID))) return true;
             return false;
+        };
+
+        const isTopLevel = (element) => {
+            return !element || element === document.body || element === document.documentElement ||
+                element === pickerHost || element === uiHost ||
+                (element.closest && (element.closest('#' + HOST_ID) || element.closest('#' + PICKER_ID)));
+        };
+        const resolveTarget = () => {
+            if (!current) return null;
+            const parent = current.parentElement;
+            const target = shiftHeld && parent && !isOwn(parent) ? parent : current;
+            return isTopLevel(target) ? current : target;
         };
 
         const describe = (element) => {
@@ -3325,14 +3343,20 @@
                 return;
             }
             current = element;
-            const rect = element.getBoundingClientRect();
+            const target = resolveTarget();
+            if (!target || isTopLevel(target)) {
+                box.style.display = 'none';
+                label.style.display = 'none';
+                return;
+            }
+            const rect = target.getBoundingClientRect();
             box.style.display = 'block';
             box.style.left = rect.left + 'px';
             box.style.top = rect.top + 'px';
             box.style.width = rect.width + 'px';
             box.style.height = rect.height + 'px';
 
-            label.textContent = describe(element);
+            label.textContent = describe(target);
             label.style.display = 'block';
             const labelWidth = label.getBoundingClientRect().width;
             const left = Math.max(0, Math.min(rect.left, window.innerWidth - labelWidth - 4));
@@ -3361,7 +3385,7 @@
             event.stopImmediatePropagation();
             if (!event.isTrusted) return;
             if (!current) return;
-            const picked = current;
+            const picked = resolveTarget();
             finish();
             try {
                 onPick(picked);
@@ -3370,10 +3394,22 @@
             }
         };
         const onKey = (event) => {
+            if (event.type === 'keyup') {
+                if (event.key === 'Shift') {
+                    shiftHeld = false;
+                    schedule();
+                }
+                return;
+            }
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
                 finish();
+                return;
+            }
+            if (event.key === 'Shift') {
+                shiftHeld = event.type === 'keydown';
+                schedule();
                 return;
             }
             const step = event.shiftKey ? 2 : 24;
@@ -3400,7 +3436,7 @@
                 event.stopPropagation();
                 if (!current) update();
                 if (!current) return;
-                const picked = current;
+                const picked = resolveTarget();
                 finish();
                 try {
                     onPick(picked);
@@ -3417,11 +3453,13 @@
         function finish() {
             if (pickerState !== self) return;
             pickerState = null;
+            shiftHeld = false;
             if (raf) cancelAnimationFrame(raf);
             document.removeEventListener('pointermove', onMove, true);
             document.removeEventListener('pointerdown', onDown, true);
             document.removeEventListener('click', onClick, true);
             document.removeEventListener('keydown', onKey, true);
+            document.removeEventListener('keyup', onKey, true);
             document.removeEventListener('contextmenu', onContext, true);
             window.removeEventListener('scroll', onScroll, true);
             pickerHost.remove();
@@ -3432,27 +3470,32 @@
         document.addEventListener('pointerdown', onDown, true);
         document.addEventListener('click', onClick, true);
         document.addEventListener('keydown', onKey, true);
+        document.addEventListener('keyup', onKey, true);
         document.addEventListener('contextmenu', onContext, true);
         window.addEventListener('scroll', onScroll, true);
         pickerState = self;
     }
 
-    function pickTarget() {
+    function pickTarget(fromParent = false) {
         if (isCurrentHostProtected()) {
             alert('Open Filter: 保護中のサイトでは要素を選択できません。先に保護を解除してください。');
             return;
         }
         startPicker((element) => {
-            const selector = buildSelector(element);
+            const target = fromParent ? (element.parentElement || element) : element;
+            const parentMode = fromParent && target !== element;
+            const selector = buildSelector(target);
             uiRoot.querySelector('#uf-f-selector').value = selector;
 
             const nameInput = uiRoot.querySelector('#uf-f-name');
             if (!nameInput.value) {
-                const text = normalizeText(element.textContent || '').slice(0, 40);
+                const text = normalizeText(target.textContent || '').slice(0, 40);
                 if (text) nameInput.value = text;
             }
-            showFormInfo(`選択: ${selector}（一致 ${safeCount(selector)} 件）`);
-        }, { tip: '非表示にしたい要素をクリックまたは矢印キーで選択 / Enterで決定 / Escでキャンセル' });
+            showFormInfo(`${parentMode ? '親要素を選択' : '選択'}: ${selector}（一致 ${safeCount(selector)} 件）`);
+        }, { tip: fromParent
+            ? '消したい要素の親をクリック / Shift+クリックでさらに上の親へ / Enterで決定 / Escでキャンセル'
+            : '非表示にしたい要素をクリック / Shift+クリックで親へ / 矢印キーで移動 / Enterで決定 / Escでキャンセル' });
     }
 
     function pickProbe() {

@@ -482,6 +482,53 @@ async function runChromium(browser) {
     await scenario.context.close();
   }
 
+  // 8.5) 要素選択: 親を選択ボタン / Shift+Enter で親へ昇格
+  {
+    const scenario = await openScenario(browser, 'dynamic-text', seedState([]));
+    await waitForUi(scenario.page);
+    await openPanel(scenario.page);
+
+    const readSelector = async () => scenario.page.evaluate(() => {
+      const host = Array.from(document.querySelectorAll('#open-filter-root')).find((h) => h.shadowRoot && h.shadowRoot.querySelector('#uf-trigger'));
+      return host.shadowRoot.querySelector('#uf-f-selector').value;
+    });
+    const hoverTitle = async () => {
+      const box = await scenario.page.locator('#title1').boundingBox();
+      if (!box) throw new Error('#title1 not found');
+      await scenario.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await scenario.page.waitForTimeout(150);
+    };
+
+    await clickShadow(scenario.page, '#uf-add');
+    await clickShadow(scenario.page, '#uf-pick-target-parent');
+    await hoverTitle();
+    await scenario.page.keyboard.press('Enter');
+    await scenario.page.waitForTimeout(300);
+    const parentButton = await readSelector();
+    info('ピッカー: 親を選択ボタン', parentButton);
+    check('ピッカー: 「親を選択」で親要素のセレクタが入る', parentButton === '#card1', parentButton);
+
+    await clickShadow(scenario.page, '#uf-pick-target');
+    await hoverTitle();
+    await scenario.page.keyboard.down('Shift');
+    await scenario.page.keyboard.press('Enter');
+    await scenario.page.keyboard.up('Shift');
+    await scenario.page.waitForTimeout(300);
+    const shiftParent = await readSelector();
+    info('ピッカー: Shift+Enter', shiftParent);
+    check('ピッカー: Shift+Enter で一段上の親を選択できる', shiftParent === '#card1', shiftParent);
+
+    await clickShadow(scenario.page, '#uf-pick-target');
+    await hoverTitle();
+    await scenario.page.keyboard.press('Enter');
+    await scenario.page.waitForTimeout(300);
+    const normal = await readSelector();
+    info('ピッカー: 通常選択', normal);
+    check('ピッカー: 通常選択は要素自身のセレクタを入れる（回帰）', normal === '#title1', normal);
+
+    await scenario.context.close();
+  }
+
   // 9) Trusted Types: UIは作れないがフィルタとメニューは動く
   {
     const scenario = await openScenario(browser, 'tt', seedState([rule('.ad', 'r_tt')]), { wait: 900 });
