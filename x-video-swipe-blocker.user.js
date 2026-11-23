@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X Video Swipe Blocker (Browser/PWA)
 // @namespace    https://github.com/Seduce0068
-// @version      1.0.1
-// @description  X（Twitter）の動画ビューア（/mediaViewer）で、縦スワイプ・ホイール・矢印キーによる次の動画への連続遷移を遮断する。タップ、横スワイプ、ビューアを閉じる操作はそのまま使える。
+// @version      1.0.2
+// @description  X（Twitter）の動画ビューア（/mediaViewer）で、縦スワイプ・ホイール・矢印キーによる次の動画への連続遷移を遮断する。画像ビューアには影響しない。タップ、横スワイプ、ビューアを閉じる操作はそのまま使える。
 // @author       Koppe + Muse
 // @match        *://*.x.com/*
 // @match        *://*.twitter.com/*
@@ -27,10 +27,11 @@
    *   現在の X の動画ビューアは
    *     /<user>/status/<id>/mediaViewer?currentTweet=<id>
    *   という URL。縦スワイプするとパスは変わらず、currentTweet だけが
-   *   次のポストの ID に書き換わる。旧形式の /video/<n> /photo/<n> も
-   *   一応検出しておく。
+   *   次のポストの ID に書き換わる。旧形式の /video/<n> も検出する。
+   *   画像ビューア /photo/<n> は対象外（画像のスワイプを壊さない）。
+   *   /mediaViewer は画像でも使われるため、動画要素の有無でも判定する。
    * ------------------------------------------------------------- */
-  const VIEWER_RE = /^\/[^/]+\/status\/(\d+)\/(mediaViewer|video|photo)(?:\/|\?|$)/;
+  const VIEWER_RE = /^\/[^/]+\/status\/(\d+)\/(mediaViewer|video)(?:\/|\?|$)/;
 
   function viewerInfo(url) {
     try {
@@ -42,6 +43,7 @@
         key: m[2] === 'mediaViewer'
           ? u.pathname.replace(/\/+$/, '')
           : '/' + m[1] + '/' + m[2],
+        kind: m[2],
         rawTweet: rawTweet,
       };
     } catch (_) {
@@ -49,7 +51,19 @@
     }
   }
 
-  const inViewer = () => !!viewerInfo();
+  // /mediaViewer は画像でも使われるので、動画プレーヤーが存在するときだけ
+  // 遮断する。旧形式の /video/<n> は URL だけで動画と確定できる。
+  function hasVideoPlayer() {
+    return !!(
+      document.querySelector('video') ||
+      document.querySelector('[data-testid="videoPlayer"]')
+    );
+  }
+
+  function inViewer() {
+    const info = viewerInfo();
+    return !!info && (info.kind === 'video' || hasVideoPlayer());
+  }
 
   /* ---------------------------------------------------------------
    * 遮断時の小さな通知（連打防止つき）
@@ -90,15 +104,17 @@
 
   function checkAnchor(mode) {
     const href = location.href;
-    if (href === lastHref) return;
-    lastHref = href;
-    const info = viewerInfo();
-    if (!info) {
+    if (!inViewer()) {
+      // ビューア外、または動画要素がまだ無い場合はアンカーを保持しない。
       anchorKey = '';
       anchorTweet = '';
       anchorHref = '';
+      lastHref = href;
       return;
     }
+    if (href === lastHref && anchorKey) return;
+    lastHref = href;
+    const info = viewerInfo();
     if (!anchorKey) {
       anchorKey = info.key;
       // 読み込み直後は currentTweet が空のことがある。

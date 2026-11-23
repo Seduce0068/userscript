@@ -21,6 +21,7 @@ const PAGE_HTML = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><title>mock X</title></head>
 <body>
 <div id="screen" style="width:100vw;height:100vh;background:#000;color:#fff">video</div>
+<video id="vid" muted></video>
 <div id="label"></div>
 <input id="comment" type="text" aria-label="comment">
 <script>
@@ -73,6 +74,7 @@ const PAGE_HTML = `<!doctype html>
 </body></html>`;
 
 const VIEWER_URL = 'https://x.com/alice/status/111/mediaViewer?currentTweet=111';
+const PHOTO_URL = 'https://x.com/alice/status/111/photo/1';
 const TIMELINE_URL = 'https://x.com/home';
 
 function dispatchTouch(page, points) {
@@ -117,7 +119,7 @@ async function events(page) {
 
 async function main() {
   if (!OVERRIDE) {
-    assert.match(USER_SCRIPT, /@version\s+1\.0\.1/);
+    assert.match(USER_SCRIPT, /@version\s+1\.0\.2/);
     assert.match(USER_SCRIPT, /mediaViewer/);
   }
 
@@ -260,6 +262,42 @@ async function main() {
         '入力欄の矢印キーまで遮断してはいけない'
       );
       results.push('入力欄の矢印キーは非遮断: OK');
+      await context.close();
+    }
+
+    {
+      const { context, page } = await open(browser, PHOTO_URL);
+      await dispatchTouch(page, [
+        ['touchstart', 100, 300],
+        ['touchmove', 100, 280],
+        ['touchmove', 100, 240],
+        ['touchend', 100, 240],
+      ]);
+      await page.waitForTimeout(150);
+      assert.ok(
+        (await events(page)).includes('advance:swipe'),
+        '画像ビューアの縦スワイプを遮断してはいけない'
+      );
+      results.push('画像ビューア (/photo/) は非遮断: OK');
+      await context.close();
+    }
+
+    {
+      const { context, page } = await open(browser, VIEWER_URL);
+      // 画像のみ表示されている /mediaViewer（動画要素なし）を模す。
+      await page.evaluate(() => document.getElementById('vid').remove());
+      await dispatchTouch(page, [
+        ['touchstart', 100, 300],
+        ['touchmove', 100, 280],
+        ['touchmove', 100, 240],
+        ['touchend', 100, 240],
+      ]);
+      await page.waitForTimeout(150);
+      assert.ok(
+        (await events(page)).includes('advance:swipe'),
+        '動画要素のない /mediaViewer のスワイプを遮断してはいけない'
+      );
+      results.push('動画なし /mediaViewer は非遮断: OK');
       await context.close();
     }
 
