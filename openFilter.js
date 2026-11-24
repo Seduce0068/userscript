@@ -133,7 +133,8 @@
                 provider: 'gist',
                 gistId: '',
                 gasUrl: '',
-                gasTransport: 'get',
+                // 共有キーを URL へ埋め込まないため POST 固定。
+                gasTransport: 'post',
                 autoUpload: true,
                 autoDownload: true,
                 dirty: false,
@@ -156,7 +157,8 @@
             out.sync.provider = raw.sync.provider === 'gas' ? 'gas' : 'gist';
             out.sync.gistId = String(raw.sync.gistId || '').slice(0, 100);
             out.sync.gasUrl = String(raw.sync.gasUrl || '').slice(0, 1000);
-            out.sync.gasTransport = raw.sync.gasTransport === 'post' ? 'post' : 'get';
+            // 旧 state の 'get' は共有キーが URL に残るため POST へ正規化する。
+            out.sync.gasTransport = 'post';
             out.sync.autoUpload = raw.sync.autoUpload !== false;
             out.sync.autoDownload = raw.sync.autoDownload !== false;
             out.sync.dirty = raw.sync.dirty === true;
@@ -548,7 +550,8 @@
     }
 
     function getGasTransport() {
-        return state.sync.gasTransport === 'post' ? 'post' : 'get';
+        // 共有キーの URL 埋め込みを避けるため、送信方式は常に POST。
+        return 'post';
     }
 
     function syncReady() {
@@ -716,27 +719,16 @@
                 return;
             }
 
-            const headers = { 'User-Agent': 'OpenFilter/' + RUNTIME_VERSION };
-            let requestMethod = method;
-            let requestUrl = url;
-            let data;
-            if (method === 'GET') {
-                if (getGasTransport() === 'post') {
-                    // 新しい GAS スクリプトでは、キーを URL ではなく本文で送る
-                    requestMethod = 'POST';
-                    headers['Content-Type'] = 'text/plain;charset=UTF-8';
-                    data = JSON.stringify({ key, action: 'fetch' });
-                } else {
-                    requestUrl += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
-                }
-            } else {
-                headers['Content-Type'] = 'text/plain;charset=UTF-8';
-                data = JSON.stringify({ key, content });
-            }
+            // 共有キーは常に POST 本文で送る。URL クエリへ埋め込まない。
+            const headers = {
+                'User-Agent': 'OpenFilter/' + RUNTIME_VERSION,
+                'Content-Type': 'text/plain;charset=UTF-8'
+            };
+            const data = JSON.stringify(method === 'GET' ? { key, action: 'fetch' } : { key, content });
 
             GM_xmlhttpRequest({
-                method: requestMethod,
-                url: requestUrl,
+                method: 'POST',
+                url,
                 headers,
                 data,
                 timeout: 20000,
@@ -2270,7 +2262,7 @@
                                 <li>「アップロード」で Gist を作成または更新し、「ダウンロード」で取得します。</li>
                                 <li>トークン・共有キー・Gist ID・GAS URL は端末内にのみ保存され、エクスポートには含まれません。</li>
                                 <li>削除/CSS変更ルールを含むリモート設定は、自動ダウンロードでは適用しません。手動ダウンロードで確認して適用してください。</li>
-                                <li>GASの送信方式は、新しいGASスクリプト（gas/Code.gs）をデプロイしたら「POST（推奨）」に変更してください。GETは旧サーバ互換で、共有キーがURLに残ります。</li>
+                                <li>GASの送信方式は、新しいGASスクリプト（gas/Code.gs）をデプロイしたら「POST（推奨）」に変更してください。共有キーはURLではなくPOST本文で送るため、URLクエリには残りません。</li>
                                 <li>Gist は secret ですが、URL を知っている人は閲覧できます。</li>
                             </ul>
                             <h3>困ったとき</h3>

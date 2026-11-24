@@ -3,7 +3,7 @@
 // @namespace    https://github.com/Seduce0068
 // @version      1.0.2
 // @description  X（Twitter）の動画ビューア（/mediaViewer）で、縦スワイプ・ホイール・矢印キーによる次の動画への連続遷移を遮断する。画像ビューアには影響しない。タップ、横スワイプ、ビューアを閉じる操作はそのまま使える。
-// @author       Koppe + Muse
+// @author       Seduce0068 + Muse
 // @match        *://*.x.com/*
 // @match        *://*.twitter.com/*
 // @grant        none

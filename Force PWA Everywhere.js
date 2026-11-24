@@ -5,7 +5,7 @@
 // @updateURL    https://github.com/Seduce0068/userscript/raw/master/Force%20PWA%20Everywhere.js
 // @downloadURL  https://github.com/Seduce0068/userscript/raw/master/Force%20PWA%20Everywhere.js
 // @description  PWA manifestを動的に注入し、ユーザー操作でインストールプロンプトを表示します。
-// @author       koppe
+// @author       Seduce0068
 // @license      MIT
 // @homepageURL  https://github.com/Seduce0068/userscript
 // @supportURL   https://github.com/Seduce0068/userscript/issues

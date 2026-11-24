@@ -3,7 +3,7 @@
 // @namespace    https://github.com/Seduce0068
 // @version      1.0.0
 // @description  ニコニコショートの専用プレーヤーに入らないようにする。/shorts/<id> を通常の視聴ページ /watch/<id> に置換し、無限スワイプ視聴を成立させない。
-// @author       Koppe + Muse
+// @author       Seduce0068 + Muse
 // @match        *://www.nicovideo.jp/*
 // @grant        none
 // @run-at       document-start
